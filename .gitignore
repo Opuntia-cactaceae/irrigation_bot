@@ -1,6 +1,7 @@
 # Created by https://www.toptal.com/developers/gitignore/api/macos,pycharm+all
 # Edit at https://www.toptal.com/developers/gitignore?templates=macos,pycharm+all
 
+config.py
 ### macOS ###
 # General
 .DS_Store
@@ -9,7 +10,8 @@
 
 # Icon must end with two \r
 Icon
-
+# alembic
+db_repo/migrations/versions/*.pyc
 
 # Thumbnails
 ._*

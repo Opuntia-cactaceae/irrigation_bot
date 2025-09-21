@@ -1,0 +1,39 @@
+# db_repo/unit_of_work.py
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from .base import AsyncSessionLocal
+
+from .users import UsersRepo
+from .plants import PlantsRepo
+from .schedules import SchedulesRepo
+from .events import EventsRepo
+from .species import SpeciesRepo
+
+class UnitOfWork:
+    class UnitOfWork:
+        def __init__(self, session: AsyncSession) -> None:
+            self.session = session
+            self.users = UsersRepo(session)
+            self.plants = PlantsRepo(session)
+            self.schedules = SchedulesRepo(session)
+            self.events = EventsRepo(session)
+            self.species = SpeciesRepo(session)
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
+@asynccontextmanager
+async def new_uow() -> AsyncIterator[UnitOfWork]:
+    async with AsyncSessionLocal() as session:
+        uow = UnitOfWork(session)
+        try:
+            yield uow
+            await uow.commit()
+        except Exception:
+            await uow.rollback()
+            raise
