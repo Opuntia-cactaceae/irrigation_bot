@@ -1,9 +1,10 @@
-version: "3.9"
-
 services:
   bot:
-    build: .
-    restart: always
-    env_file:
-      - .env
-    command: ["python", "-m", "app"]
+    build:
+      context: .
+      dockerfile: dockerfile
+    command: python bot/app.py   # <— вот так
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - db
