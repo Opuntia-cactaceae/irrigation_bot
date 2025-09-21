@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем проект
 COPY . .
 
-# Переменные окружения: вывод Python без буферизации
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
 CMD bash -lc "alembic -c bot/db_repo/migrations/alembic.ini upgrade head && python -m bot.app"
