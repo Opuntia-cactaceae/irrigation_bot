@@ -15,4 +15,4 @@ COPY . .
 # Переменные окружения: вывод Python без буферизации
 ENV PYTHONUNBUFFERED=1
 
-CMD bash -lc "alembic -c bot/db_repo/migrations/alembic.ini upgrade head && python bot/app.py"
+CMD bash -lc "alembic -c bot/db_repo/migrations/alembic.ini upgrade head && python -m bot.app"
