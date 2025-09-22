@@ -2,7 +2,11 @@ from __future__ import annotations
 from logging.config import fileConfig
 from sqlalchemy import pool
 from alembic import context
-
+from pathlib import Path
+import sys
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 # 1) Импортируем Base и настройки
 from bot.db_repo.models import Base
 from bot.config import settings
