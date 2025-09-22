@@ -8,9 +8,9 @@ from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
-from db_repo.base import AsyncSessionLocal
-from db_repo.models import Schedule, ActionType, Event, Plant, User
-from db_repo.unit_of_work import new_uow
+from bot.db_repo.base import AsyncSessionLocal
+from bot.db_repo.models import Schedule, ActionType, Event, Plant, User
+from bot.db_repo.unit_of_work import new_uow
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
