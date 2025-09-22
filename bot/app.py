@@ -7,8 +7,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import settings
 
 # БД
-from db_repo.base import engine
-from db_repo.models import Base
+from bot.db_repo.base import engine
+from bot.db_repo.models import Base
 
 # Роутеры
 from bot.handlers.main_menu import main_menu_router
