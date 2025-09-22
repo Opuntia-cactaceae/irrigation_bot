@@ -3,7 +3,7 @@ import asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-
+from aiogram.client.default import DefaultBotProperties
 from bot.config import settings
 
 # БД
@@ -29,7 +29,10 @@ async def main():
         await conn.run_sync(Base.metadata.create_all)
 
     # 2) Бот + диспетчер с FSM
-    bot = Bot(token=settings.BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher(storage=MemoryStorage())
 
     # 3) Роутеры
