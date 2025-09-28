@@ -1,4 +1,4 @@
-# db_repo/unit_of_work.py
+# bot/db_repo/unit_of_work.py
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -11,21 +11,22 @@ from .schedules import SchedulesRepo
 from .events import EventsRepo
 from .species import SpeciesRepo
 
+
 class UnitOfWork:
-    class UnitOfWork:
-        def __init__(self, session: AsyncSession) -> None:
-            self.session = session
-            self.users = UsersRepo(session)
-            self.plants = PlantsRepo(session)
-            self.schedules = SchedulesRepo(session)
-            self.events = EventsRepo(session)
-            self.species = SpeciesRepo(session)
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.users = UsersRepo(session)
+        self.plants = PlantsRepo(session)
+        self.schedules = SchedulesRepo(session)
+        self.events = EventsRepo(session)
+        self.species = SpeciesRepo(session)
 
     async def commit(self) -> None:
         await self.session.commit()
 
     async def rollback(self) -> None:
         await self.session.rollback()
+
 
 @asynccontextmanager
 async def new_uow() -> AsyncIterator[UnitOfWork]:
