@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, date, time, timedelta
 from math import ceil
-from typing import Optional, Literal, Iterable, Dict, List
+from typing import Optional, Literal, Dict, List
 
 import pytz
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import User, Plant, Schedule, Event, ActionType
+from bot.db_repo.models import User, Plant, Schedule, ActionType
 from .rules import next_by_interval, next_by_weekly
 
 Mode = Literal["upc", "hist"]  # upcoming | history
@@ -21,6 +21,7 @@ HIST_MAX_DAYS = 180
 @dataclass
 class FeedItem:
     dt_utc: datetime
+    dt_local: datetime
     plant_id: int
     plant_name: str
     action: ActionType
@@ -38,6 +39,23 @@ class FeedPage:
     page: int
     pages: int
     days: List[FeedDay]
+
+
+def _safe_tz(name: Optional[str]) -> pytz.BaseTzInfo:
+    try:
+        return pytz.timezone(name or "UTC")
+    except Exception:
+        return pytz.UTC
+
+
+def _localize_day_bounds(tz: pytz.BaseTzInfo, d: date) -> tuple[datetime, datetime]:
+    """Границы локального дня с корректной локализацией (DST-safe)."""
+    start_naive = datetime.combine(d, time.min)
+    end_naive = datetime.combine(d, time.max)
+    # pytz требует localize()
+    start_local = tz.localize(start_naive, is_dst=None)
+    end_local = tz.localize(end_naive, is_dst=None)
+    return start_local, end_local
 
 
 async def get_feed(
@@ -60,26 +78,23 @@ async def get_feed(
     """
     async with new_uow() as uow:
         user: User = await uow.users.get_or_create(user_tg_id)
-        plants: list[Plant] = await uow.plants.list_by_user_with_relations(user.id)
+        # ожидается, что этот метод подтягивает p.schedules и p.events;
+        # если у тебя его нет — сделай .list_by_user(user.id) и отдельно подтяни связи
+        plants: List[Plant] = await uow.plants.list_by_user_with_relations(user.id)
 
     # фильтрация растений
     if plant_id:
         plants = [p for p in plants if p.id == plant_id]
 
-    # таймзона пользователя
-    tz = pytz.timezone(user.tz)
-
-    # Локальные границы страницы (по дням, локальная календарная сетка)
+    tz = _safe_tz(getattr(user, "tz", None))
     today_local = datetime.now(tz).date()
 
     if mode == "upc":
-        # Стр.1: сегодня..+N-1, стр.2: +N..+2N-1 ...
         page = max(1, page)
         start_local_day = today_local + timedelta(days=(page - 1) * days_per_page)
         end_local_day = start_local_day + timedelta(days=days_per_page - 1)
         max_days = UPC_MAX_DAYS
     else:
-        # История: Стр.1: (вчера..-N+1), Стр.2: (-N..-2N+1) ...
         page = max(1, page)
         end_local_day = today_local - timedelta(days=(page - 1) * days_per_page + 1)
         start_local_day = end_local_day - timedelta(days=days_per_page - 1)
@@ -87,66 +102,60 @@ async def get_feed(
 
     total_pages = max(1, ceil(max_days / days_per_page))
 
-    # Переводим локальные дни в UTC-диапазон
-    start_local_dt = datetime.combine(start_local_day, time.min).replace(tzinfo=tz)
-    end_local_dt = datetime.combine(end_local_day, time.max).replace(tzinfo=tz)
+    # Переведём локальные границы в UTC
+    start_local_dt, end_local_dt = _localize_day_bounds(tz, start_local_day)
+    # если окно больше одного дня — правая граница = конец последнего дня
+    if end_local_day != start_local_day:
+        _, end_local_dt = _localize_day_bounds(tz, end_local_day)
 
     start_utc = start_local_dt.astimezone(pytz.UTC)
     end_utc = end_local_dt.astimezone(pytz.UTC)
 
-    # Сбор кандидатов в диапазоне [start_local_day .. end_local_day]
-    items: list[FeedItem] = []
+    items: List[FeedItem] = []
 
     for p in plants:
+        # аккуратно обработаем отсутствие связей
+        p_schedules: List[Schedule] = list(getattr(p, "schedules", []) or [])
+        p_events = list(getattr(p, "events", []) or [])
+
         # отбираем расписания
-        schedules: list[Schedule] = [
-            s for s in (p.schedules or [])
-            if s.active and (action is None or s.action == action)
+        schedules: List[Schedule] = [
+            s for s in p_schedules
+            if getattr(s, "active", True) and (action is None or s.action == action)
         ]
         if not schedules:
             continue
 
-        # события для якорей
-        by_action_last: dict[ActionType, Optional[datetime]] = {}
+        # последние события по действию
+        by_action_last: Dict[ActionType, Optional[datetime]] = {}
         for s in schedules:
             last = max(
-                (e.done_at_utc for e in (p.events or []) if e.action == s.action),
+                (getattr(e, "done_at_utc", None) for e in p_events if e.action == s.action),
                 default=None
             )
             by_action_last[s.action] = last
 
-        # для каждого расписания генерируем наступления в рамках диапазона
+        # генерируем наступления в рамках окна
         for s in schedules:
-            # маленький «толчок» назад, чтобы первая генерация могла попасть прямо в начало окна
             base_now = start_utc - timedelta(seconds=1)
-
-            # шагать вперёд до выхода за край окна
             cursor: Optional[datetime] = None
-            guard = 0
-            while guard < 200:  # страховка от бесконечного цикла
-                guard += 1
-                # для первого шага last = фактический последний Event; далее last = предыдущая сгенерированная dt
+            for _ in range(200):  # страховка от бесконечного цикла
                 last_anchor = by_action_last[s.action] if cursor is None else cursor
 
                 if s.type == "interval":
-                    nxt = next_by_interval(
-                        last_anchor, s.interval_days, s.local_time, user.tz, base_now
-                    )
+                    nxt = next_by_interval(last_anchor, s.interval_days, s.local_time, getattr(user, "tz", "UTC"), base_now)
                 else:
-                    nxt = next_by_weekly(
-                        last_anchor, s.weekly_mask, s.local_time, user.tz, base_now
-                    )
+                    nxt = next_by_weekly(last_anchor, s.weekly_mask, s.local_time, getattr(user, "tz", "UTC"), base_now)
 
-                # если вылетели за окно — стоп
                 if nxt > end_utc:
                     break
 
-                # положим, если внутри окна
-                nxt_local_day = nxt.astimezone(tz).date()
-                if start_local_day <= nxt_local_day <= end_local_day:
+                d_loc = nxt.astimezone(tz).date()
+                if start_local_day <= d_loc <= end_local_day:
                     items.append(
                         FeedItem(
                             dt_utc=nxt,
+                            dt_local=nxt.astimezone(tz),
                             plant_id=p.id,
                             plant_name=p.name,
                             action=s.action,
@@ -154,27 +163,19 @@ async def get_feed(
                         )
                     )
 
-                # перейти к следующему
                 cursor = nxt
-                base_now = nxt  # следующий будет строго после текущего
-
-                # небольшое ускорение: если локальный день уже превысил окно и расписание weekly,
-                # дальше вряд ли попадём — но оставим общий break по end_utc.
+                base_now = nxt  # следующий строго после текущего
 
     # Группировка по локальной дате и сортировка
     by_day: Dict[date, List[FeedItem]] = {}
     for it in items:
-        d = it.dt_utc.astimezone(tz).date()
+        d = it.dt_local.date()
         by_day.setdefault(d, []).append(it)
 
-    # Соберём дни по порядку от start_local_day до end_local_day
     days: List[FeedDay] = []
     cur = start_local_day
     while cur <= end_local_day:
-        day_items = sorted(
-            by_day.get(cur, []),
-            key=lambda x: x.dt_utc
-        )
+        day_items = sorted(by_day.get(cur, []), key=lambda x: x.dt_local)
         if day_items:
             days.append(FeedDay(date_local=cur, items=day_items))
         cur += timedelta(days=1)

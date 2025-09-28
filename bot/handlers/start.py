@@ -1,18 +1,31 @@
-# handlers/start.py
+# bot/handlers/start.py
 from aiogram import Router, types
-from .db import SessionLocal
-from ..models import User
+from aiogram.filters import CommandStart
 
-router = Router()
+from bot.db_repo.unit_of_work import new_uow
 
-@router.message(commands={"start"})
+router = Router(name="start")
+
+
+@router.message(CommandStart())
 async def start(m: types.Message):
-    async with SessionLocal() as s:
-        user = (await s.execute(
-            User.__table__.select().where(User.tg_user_id == m.from_user.id)
-        )).scalar_one_or_none()
-        if not user:
-            user = User(tg_user_id=m.from_user.id)  # tz по умолчанию
-            s.add(user)
-            await s.commit()
-    await m.answer("Привет! Я помогу с поливом 🌿\nДобавь растение: /add_plant")
+    tg_id = m.from_user.id
+
+    # создаём пользователя при первом старте (или получаем существующего)
+    async with new_uow() as uow:
+        user = await uow.users.get_or_create(tg_id)
+
+        # при желании можно выставить TZ по умолчанию один раз
+        # (если в модели поле tz nullable и не задано)
+        if getattr(user, "tz", None) in (None, ""):
+            try:
+                user.tz = "UTC"  # или, если хочешь, "Europe/Amsterdam"
+                await uow.session.flush()  # чтобы сохранить изменение вместе с коммитом контекста
+            except Exception:
+                pass
+
+    await m.answer(
+        "Привет! Я помогу с поливом 🌿\n"
+        "Добавь растение: /add_plant\n"
+        "Открой календарь: /calendar"
+    )

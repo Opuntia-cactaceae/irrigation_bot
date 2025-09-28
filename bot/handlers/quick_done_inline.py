@@ -1,18 +1,14 @@
 # bot/handlers/quick_done_inline.py
 from __future__ import annotations
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 import pytz
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.db_repo.base import AsyncSessionLocal
-from bot.db_repo.models import Schedule, Plant, User, Event, ActionType
 from bot.db_repo.unit_of_work import new_uow
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
+from bot.db_repo.models import ActionType
 from bot.services.rules import next_by_interval, next_by_weekly
 from bot.scheduler import plan_next_for_schedule
 
@@ -25,51 +21,64 @@ ACTION_EMOJI = {
     ActionType.REPOTTING: "🪴",
 }
 
+
 # ---------- утилита расчёта ближайшего наступления по расписанию ----------
-def _calc_next_run_utc(*, sch: Schedule, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
+def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
     if sch.type == "interval":
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
     else:
         return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
 
+
 # ---------- сбор ближайших задач по пользователю ----------
-async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15):
+async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[Dict[str, Any]]:
     """
     Возвращает список словарей:
-    { 'schedule_id', 'dt_utc', 'plant_id', 'plant_name', 'action' }
+    { 'schedule_id', 'dt_utc', 'dt_local', 'plant_id', 'plant_name', 'action', 'user_tz' }
     отсортированный по времени.
+    Делает всё через репозитории, без голого Session.
     """
-    async with AsyncSessionLocal() as session:
-        # user + все активные расписания с связями
-        q = (
-            select(Schedule)
-            .join(Schedule.plant)
-            .join(Plant.user)
-            .where(User.tg_user_id == user_tg_id, Schedule.active.is_(True))
-            .options(
-                selectinload(Schedule.plant).selectinload(Plant.user),
-                selectinload(Schedule.plant).selectinload(Plant.events),
-            )
-        )
-        schedules: List[Schedule] = (await session.execute(q)).scalars().all()
+    async with new_uow() as uow:
+        user = await uow.users.get_or_create(user_tg_id)
+        user_tz = getattr(user, "tz", "UTC") or "UTC"
 
-    items = []
+        # Берём растения с отношениями (schedules + events). Если такого метода нет — можно заменить на list_by_user.
+        try:
+            plants = await uow.plants.list_by_user_with_relations(user.id)
+        except AttributeError:
+            plants = await uow.plants.list_by_user(user.id)
+
+    tz = pytz.timezone(user_tz)
     now_utc = datetime.now(pytz.UTC)
-    for sch in schedules:
-        user = sch.plant.user
-        tz = user.tz
-        last = max((e.done_at_utc for e in (sch.plant.events or []) if e.action == sch.action), default=None)
-        run_at = _calc_next_run_utc(sch=sch, user_tz=tz, last_event_utc=last, now_utc=now_utc)
-        items.append({
-            "schedule_id": sch.id,
-            "dt_utc": run_at,
-            "plant_id": sch.plant.id,
-            "plant_name": sch.plant.name,
-            "action": sch.action,
-        })
+    items: List[Dict[str, Any]] = []
+
+    for p in plants:
+        schedules = [s for s in (getattr(p, "schedules", []) or []) if getattr(s, "active", True)]
+        if not schedules:
+            continue
+
+        events = list(getattr(p, "events", []) or [])
+
+        for sch in schedules:
+            # Последнее событие по тому же действию
+            last = max(
+                (getattr(e, "done_at_utc", None) for e in events if e.action == sch.action),
+                default=None,
+            )
+            run_at_utc = _calc_next_run_utc(sch=sch, user_tz=user_tz, last_event_utc=last, now_utc=now_utc)
+            items.append({
+                "schedule_id": sch.id,
+                "dt_utc": run_at_utc,
+                "dt_local": run_at_utc.astimezone(tz),
+                "plant_id": p.id,
+                "plant_name": p.name,
+                "action": sch.action,
+                "user_tz": user_tz,
+            })
 
     items.sort(key=lambda x: x["dt_utc"])
     return items[:limit]
+
 
 # ---------- публичный вход из главного меню ----------
 async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
@@ -105,12 +114,9 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
 
     for idx, it in enumerate(items, start=1):
         emoji = ACTION_EMOJI.get(it["action"], "•")
-        # покажем локальное время пользователя
-        # локаль берём из первого элемента (у всех один и тот же user); чтобы не делать лишний запрос, форматируем в UTC с пометкой
-        # лучше всего — хранить tz пользователя в items, но для простоты отобразим HH:MM UTC
-        t_str = it["dt_utc"].strftime("%H:%M")
+        # показываем ЛОКАЛЬНОЕ время пользователя (есть в items)
+        t_str = it["dt_local"].strftime("%H:%M")
         lines.append(f"{idx:>2}. {t_str} {emoji} {it['plant_name']} (id:{it['plant_id']})")
-        # Кнопка «✅» для этого пункта
         kb.row(
             types.InlineKeyboardButton(
                 text=f"✅ {idx}. Отметить",
@@ -131,6 +137,7 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
     else:
         await message.answer(text, reply_markup=kb.as_markup())
 
+
 # ---------- обработчики колбэков ----------
 @router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_quick_done_callbacks(cb: types.CallbackQuery):
@@ -150,25 +157,33 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
         except Exception:
             return await cb.answer("Не получилось отметить", show_alert=True)
 
-        # Найдём расписание и создадим событие по его растению/действию
-        async with AsyncSessionLocal() as session:
-            sch: Schedule | None = await session.get(
-                Schedule,
-                schedule_id,
-                options=(
-                    selectinload(Schedule.plant),
-                ),
-            )
-            if not sch:
-                await cb.answer("Расписание не найдено", show_alert=True)
+        # Проверим права и создадим событие
+        async with new_uow() as uow:
+            sch = await uow.schedules.get(schedule_id)
+            if not sch or not getattr(sch, "active", True):
+                await cb.answer("Расписание не найдено или отключено", show_alert=True)
                 return await show_quick_done_menu(cb)
 
-        async with new_uow() as uow:
-            # записываем manual Event
-            await uow.events.create(plant_id=sch.plant.id, action=sch.action, source="manual")
+            plant = await uow.plants.get(getattr(sch, "plant_id", None))
+            if not plant:
+                await cb.answer("Растение не найдено", show_alert=True)
+                return await show_quick_done_menu(cb)
 
-        # перепланируем следующее напоминание по этому расписанию
-        await plan_next_for_schedule(cb.bot, schedule_id)
+            owner = await uow.users.get_by_id(getattr(plant, "user_id", None))
+            if not owner or owner.tg_user_id != cb.from_user.id:
+                await cb.answer("Недоступно", show_alert=True)
+                return
+
+            # Записываем manual Event
+            await uow.events.create(plant_id=plant.id, action=sch.action, source="manual")
+            # Коммит произойдёт на выходе из контекста
+
+        # Перепланируем следующее напоминание по этому расписанию
+        try:
+            await plan_next_for_schedule(cb.bot, schedule_id)
+        except Exception:
+            # не критично для UX
+            pass
 
         await cb.answer("Отмечено ✅", show_alert=False)
         return await show_quick_done_menu(cb)

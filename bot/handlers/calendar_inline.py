@@ -1,14 +1,17 @@
 # bot/handlers/calendar_inline.py
 from __future__ import annotations
+
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from datetime import datetime, timezone
-from typing import Optional, Literal
 from aiogram.fsm.context import FSMContext
+from datetime import timezone, datetime
+from typing import Optional
+
 from bot.handlers.schedule_inline import show_schedule_wizard
 from bot.db_repo.models import ActionType
 from bot.services.calendar_feed import get_feed, Mode  # Mode = Literal["upc","hist"]
 from bot.db_repo.unit_of_work import new_uow
+
 calendar_router = Router(name="calendar_inline")
 
 PREFIX = "cal"
@@ -38,8 +41,8 @@ PAGE_SIZE_DAYS = 5  # сколько локальных дней показыв�
 # ====== ПУБЛИЧНЫЙ ВХОД ИЗ МЕНЮ ======
 async def show_calendar_root(
     target: types.Message | types.CallbackQuery,
-    year: int,  # не используется в текущем UX, оставим для совместимости
-    month: int, # не используется в текущем UX, оставим для совместимости
+    year: int,
+    month: int,
     action: Optional[ActionType] = None,
     plant_id: Optional[int] = None,
     mode: Mode = "upc",
@@ -53,7 +56,7 @@ async def show_calendar_root(
         message = target
         user_id = target.from_user.id
 
-    # реальная лента
+    # получаем страницу ленты
     feed_page = await get_feed(
         user_tg_id=user_id,
         action=action,
@@ -64,7 +67,7 @@ async def show_calendar_root(
     )
 
     header = _render_header(mode, action, plant_id)
-    body = _render_feed_text(feed_page, action)
+    body = _render_feed_text(feed_page)
     kb = _kb_calendar(mode, feed_page.page, feed_page.pages, action, plant_id)
 
     text = header + "\n" + body
@@ -86,8 +89,7 @@ def _kb_calendar(
     kb = InlineKeyboardBuilder()
 
     # фильтр по типу действия
-    row_actions = [("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")]
-    for text, code in row_actions:
+    for text, code in (("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")):
         active = (ACT_TO_CODE.get(action) == code)
         mark = "✓ " if active and code != "all" else ""
         kb.button(
@@ -116,9 +118,7 @@ def _kb_calendar(
             text="◀️",
             callback_data=f"{PREFIX}:page:{mode}:{max(1, page-1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
-        types.InlineKeyboardButton(
-            text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"
-        ),
+        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
             text="▶️",
             callback_data=f"{PREFIX}:page:{mode}:{min(pages, page+1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
@@ -141,9 +141,7 @@ def _kb_calendar(
 
 
 # ====== РЕНДЕР ТЕКСТА ======
-def _render_header(
-    mode: Mode, action: Optional[ActionType], plant_id: Optional[int]
-) -> str:
+def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[int]) -> str:
     act_label = {
         None: "Все действия",
         ActionType.WATERING: "Полив",
@@ -159,9 +157,13 @@ def _render_header(
     )
 
 
-def _render_feed_text(feed_page, action: Optional[ActionType]) -> str:
-    """Рендерит FeedPage из calendar_feed.get_feed."""
-    if not feed_page.days:
+def _render_feed_text(feed_page) -> str:
+    """Рендерит FeedPage из calendar_feed.get_feed.
+    Ожидается структура:
+      feed_page.days = [ Day(date_local=..., items=[Item(...), ...]), ... ]
+      Item содержит хотя бы: action, plant_name, plant_id, dt_local ИЛИ dt_utc
+    """
+    if not getattr(feed_page, "days", None):
         return "Пока пусто."
 
     lines: list[str] = []
@@ -170,11 +172,17 @@ def _render_feed_text(feed_page, action: Optional[ActionType]) -> str:
         lines.append(f"\n📅 <b>{d:%d.%m (%a)}</b>")
         for it in day.items:
             emoji = ACT_TO_EMOJI.get(it.action, "•")
-            local_time = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")  # время в UTC; если хочешь локальное — подавай из сервиса
-            lines.append(f"  {local_time} {emoji} {it.plant_name} (id:{it.plant_id})")
+            # предпочитаем локальное время, если сервис его дал
+            if hasattr(it, "dt_local") and it.dt_local:
+                t = it.dt_local.strftime("%H:%M")
+            else:
+                # fallback: показываем UTC (лучше так, чем падать)
+                t = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
+            lines.append(f"  {t} {emoji} {it.plant_name} (id:{it.plant_id})")
     return "\n".join(lines).lstrip()
 
 
+# ====== CALLBACKS ======
 @calendar_router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
@@ -221,39 +229,36 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
         action = ACT_MAP.get(act_code, None)
         plant_id = pid or None
 
+        # безопасность: проверим владельца без глубоких ленивых связей
         async with new_uow() as uow:
             sch = await uow.schedules.get(schedule_id)
             if not sch or not sch.active:
                 await cb.answer("Расписание не найдено или отключено", show_alert=True)
-                return await show_calendar_root(
-                    cb,
-                    year=datetime.now().year,
-                    month=datetime.now().month,
-                    action=action,
-                    plant_id=plant_id,
-                    mode=mode,
-                    page=page,
-                )
+                return await show_calendar_root(cb, datetime.now().year, datetime.now().month,
+                                               action=action, plant_id=plant_id, mode=mode, page=page)
 
-            # проверка владельца
-            if sch.plant.user.tg_user_id != cb.from_user.id:
+            plant = await uow.plants.get(sch.plant_id)
+            if not plant or plant.user_id is None:
+                await cb.answer("Недоступно", show_alert=True)
+                return
+            owner = await uow.users.get_by_id(plant.user_id)
+            if not owner or owner.tg_user_id != cb.from_user.id:
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
             # создаём событие
             await uow.events.create(
-                plant_id=sch.plant.id,
+                plant_id=sch.plant_id,
                 action=sch.action,
                 source="manual",
             )
-            # commit произойдёт автоматически при выходе из контекста
+            # commit выполнится на выходе
 
-        # перепланировать
+        # перепланировать следующий раз по этому расписанию
         from bot.scheduler import plan_next_for_schedule
         await plan_next_for_schedule(cb.bot, schedule_id)
 
         await cb.answer("Отмечено ✅", show_alert=False)
-
         return await show_calendar_root(
             cb,
             year=datetime.now().year,
