@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .models import User
 from .base import BaseRepo
 
+
 class UsersRepo(BaseRepo):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
@@ -19,6 +20,7 @@ class UsersRepo(BaseRepo):
             return user
         user = User(tg_user_id=tg_user_id, tz=tz)
         await self.add(user)
+        await self.session.flush()
         return user
 
     async def set_timezone(self, user_id: int, tz: str) -> None:

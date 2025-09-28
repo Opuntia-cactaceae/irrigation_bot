@@ -101,16 +101,17 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
 
     if action == "pick_plant":
         plant_id = int(parts[2])
-        # проверка владения растением
+        # проверка владения растением (без get_by_id)
         async with new_uow() as uow:
             plant = await uow.plants.get(plant_id)
             if not plant:
                 await cb.answer("Растение не найдено", show_alert=True)
                 return
-            owner = await uow.users.get_by_id(getattr(plant, "user_id", None))
-            if not owner or owner.tg_user_id != cb.from_user.id:
+            me = await uow.users.get_or_create(cb.from_user.id)
+            if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return
+
         await state.update_data(plant_id=plant_id)
         await state.set_state(SchStates.choosing_action)
         return await _screen_choose_action(cb)

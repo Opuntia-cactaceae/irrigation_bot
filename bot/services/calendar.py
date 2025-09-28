@@ -9,9 +9,9 @@ import pytz
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType
-from .rules import next_by_interval, next_by_weekly  # уже есть у тебя
+from .rules import next_by_interval, next_by_weekly
 
-Mode = Literal["upc", "hist"]  # upcoming / history
+Mode = Literal["upc", "hist"]
 
 
 @dataclass
@@ -36,8 +36,6 @@ class FeedPage:
     days: List[DayGroup]
 
 
-# ----- helpers ---------------------------------------------------------------
-
 def _slice_days(grouped: List[DayGroup], page: int, per_page: int) -> Tuple[List[DayGroup], int, int]:
     total = max(1, len(grouped))
     pages = (total + per_page - 1) // per_page
@@ -54,7 +52,6 @@ def _group_by_local_day(items: Iterable[FeedItem]) -> List[DayGroup]:
         bucket.setdefault(d, []).append(it)
     days: List[DayGroup] = []
     for d in sorted(bucket.keys()):
-        # внутри дня отсортируем по локальному времени
         day_items = sorted(bucket[d], key=lambda x: x.dt_local)
         days.append(DayGroup(date_local=d, items=day_items))
     return days
@@ -72,9 +69,6 @@ async def _get_user_and_tz(user_tg_id: int) -> tuple[object, pytz.BaseTzInfo]:
 
 
 async def _iter_user_schedules(user_id: int):
-    """Пытаемся получить активные расписания пользователя.
-    Ожидается метод list_by_user(user_id) -> Iterable[Schedule].
-    Если у тебя другой — подправь тут один раз."""
     async with new_uow() as uow:
         try:
             sch = await uow.schedules.list_by_user(user_id)
@@ -84,17 +78,13 @@ async def _iter_user_schedules(user_id: int):
 
 
 async def _get_last_event_dt_utc(plant_id: int, action: ActionType) -> Optional[datetime]:
-    """Пытаемся достать последний факт события для plant+action.
-    Под разные реализации репозитория делаем несколько попыток."""
     async with new_uow() as uow:
-        # 1) специализированный метод
         try:
             dt = await uow.events.last_dt_for(plant_id=plant_id, action=action)
             if dt:
                 return dt
         except AttributeError:
             pass
-        # 2) общий список, берём максимум
         try:
             evs = await uow.events.list_by_plant_action(plant_id=plant_id, action=action, limit=1, order="desc")
             if evs:
@@ -105,8 +95,6 @@ async def _get_last_event_dt_utc(plant_id: int, action: ActionType) -> Optional[
     return None
 
 
-# ----- public API ------------------------------------------------------------
-
 async def get_feed(
     *,
     user_tg_id: int,
@@ -116,27 +104,19 @@ async def get_feed(
     page: int,
     days_per_page: int,
 ) -> FeedPage:
-    """Строит ленту календаря.
-    - upc: по каждому активному расписанию считает ближайшую дату от текущего момента
-    - hist: (заглушка) возвращает пустую ленту — можно дополнить выборкой событий
-    """
-
     user, tz = await _get_user_and_tz(user_tg_id)
 
     if mode == "hist":
-        # Заглушка истории — вернём пустую ленту, чтобы UI не падал
         grouped: List[DayGroup] = []
         days, page, pages = _slice_days(grouped, page=1, per_page=days_per_page)
         return FeedPage(page=page, pages=pages, days=days)
 
-    # -------- UPCOMING --------
     items: List[FeedItem] = []
     schedules = await _iter_user_schedules(getattr(user, "id", 0))
 
     now_utc = datetime.now(pytz.UTC)
 
     for sch in schedules:
-        # фильтры
         sch_action: ActionType = getattr(sch, "action", None)
         if action is not None and sch_action != action:
             continue
@@ -146,20 +126,17 @@ async def get_feed(
             continue
 
         if not sch_plant_id:
-            continue  # некорректное расписание
+            continue
 
         plant_name = getattr(getattr(sch, "plant", None), "name", None) or f"#{sch_plant_id}"
 
-        # исходные параметры расписания
-        sch_type = getattr(sch, "type", None)  # "interval" | "weekly"
+        sch_type = getattr(sch, "type", None)
         local_time = getattr(sch, "local_time", None)
         interval_days = getattr(sch, "interval_days", None)
         weekly_mask = getattr(sch, "weekly_mask", None)
 
-        # последняя зафиксированная дата события
         last_dt_utc = await _get_last_event_dt_utc(sch_plant_id, sch_action)
 
-        # вычисляем следующий раз
         try:
             if sch_type == "interval":
                 nxt_utc = next_by_interval(
@@ -170,7 +147,6 @@ async def get_feed(
                     last_dt_utc, weekly_mask, local_time, tz.zone, now_utc
                 )
         except Exception:
-            # если что-то не так с полями — пропускаем расписание
             continue
 
         dt_local = nxt_utc.astimezone(tz)
@@ -185,7 +161,6 @@ async def get_feed(
             )
         )
 
-    # группируем по локальным дням и режем на страницы
     grouped = _group_by_local_day(items)
     days, page, pages = _slice_days(grouped, page=page, per_page=days_per_page)
 

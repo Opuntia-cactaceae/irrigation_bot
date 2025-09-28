@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from datetime import time
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import ActionType  # если требуется поле action у расписания
+from bot.db_repo.models import ActionType
 
 router = Router(name="schedule_cmd")
 
@@ -56,8 +56,8 @@ async def set_schedule(m: types.Message):
             return await m.answer("Растение не найдено.")
 
         # Проверим владельца
-        owner = await uow.users.get_by_id(getattr(plant, "user_id", None))
-        if not owner or owner.tg_user_id != m.from_user.id:
+        me = await uow.users.get_or_create(m.from_user.id)  # гарантируй, что get_or_create делает flush -> есть me.id
+        if getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно. Это растение не принадлежит вам.")
 
         # Удалим старые расписания этого растения (если такая логика нужна)
@@ -86,7 +86,6 @@ async def set_schedule(m: types.Message):
                 interval_days=days,
                 local_time=local_t,
                 active=True,
-                # если в модели есть поле action — оставим полив по умолчанию
                 action=getattr(ActionType, "WATERING", None),
             )
         else:
@@ -102,9 +101,7 @@ async def set_schedule(m: types.Message):
                 action=getattr(ActionType, "WATERING", None),
             )
 
-    # Спланируем следующий запуск (вне UnitOfWork)
     planned_ok = False
-    # пробуем разные варианты, чтобы не зависеть от реализации планировщика
     try:
         from bot.scheduler import plan_next_for_schedule
         if created and getattr(created, "id", None) is not None:
@@ -117,6 +114,6 @@ async def set_schedule(m: types.Message):
             from bot.scheduler import plan_next_for_plant
             await plan_next_for_plant(m.bot, plant_id)
         except Exception:
-            pass  # не критично для сохранения расписания
+            pass
 
     await m.answer("Расписание сохранено ✅")

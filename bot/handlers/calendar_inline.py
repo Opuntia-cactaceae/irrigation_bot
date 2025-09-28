@@ -9,14 +9,13 @@ from typing import Optional
 
 from bot.handlers.schedule_inline import show_schedule_wizard
 from bot.db_repo.models import ActionType
-from bot.services.calendar_feed import get_feed, Mode  # Mode = Literal["upc","hist"]
+from bot.services.calendar_feed import get_feed, Mode
 from bot.db_repo.unit_of_work import new_uow
 
 calendar_router = Router(name="calendar_inline")
 
 PREFIX = "cal"
 
-# короткие коды для action
 ACT_MAP: dict[str, Optional[ActionType]] = {
     "all": None,
     "w": ActionType.WATERING,
@@ -35,10 +34,9 @@ ACT_TO_CODE: dict[Optional[ActionType], str] = {
     ActionType.REPOTTING: "r",
 }
 
-PAGE_SIZE_DAYS = 5  # сколько локальных дней показываем на странице
+PAGE_SIZE_DAYS = 5
 
 
-# ====== ПУБЛИЧНЫЙ ВХОД ИЗ МЕНЮ ======
 async def show_calendar_root(
     target: types.Message | types.CallbackQuery,
     year: int,
@@ -48,7 +46,6 @@ async def show_calendar_root(
     mode: Mode = "upc",
     page: int = 1,
 ):
-    """Главный экран календаря: фильтры + лента."""
     if isinstance(target, types.CallbackQuery):
         message = target.message
         user_id = target.from_user.id
@@ -56,7 +53,6 @@ async def show_calendar_root(
         message = target
         user_id = target.from_user.id
 
-    # получаем страницу ленты
     feed_page = await get_feed(
         user_tg_id=user_id,
         action=action,
@@ -78,7 +74,6 @@ async def show_calendar_root(
         await message.answer(text, reply_markup=kb)
 
 
-# ====== КЛАВИАТУРЫ ======
 def _kb_calendar(
     mode: Mode,
     page: int,
@@ -88,7 +83,6 @@ def _kb_calendar(
 ):
     kb = InlineKeyboardBuilder()
 
-    # фильтр по типу действия
     for text, code in (("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")):
         active = (ACT_TO_CODE.get(action) == code)
         mark = "✓ " if active and code != "all" else ""
@@ -98,7 +92,6 @@ def _kb_calendar(
         )
     kb.adjust(4)
 
-    # табы: ближайшие / история
     upc_active = (mode == "upc")
     hist_active = (mode == "hist")
     kb.row(
@@ -112,7 +105,6 @@ def _kb_calendar(
         ),
     )
 
-    # пагинация
     kb.row(
         types.InlineKeyboardButton(
             text="◀️",
@@ -125,7 +117,6 @@ def _kb_calendar(
         ),
     )
 
-    # действия
     kb.row(
         types.InlineKeyboardButton(
             text="🗓️ Запланировать",
@@ -140,7 +131,6 @@ def _kb_calendar(
     return kb.as_markup()
 
 
-# ====== РЕНДЕР ТЕКСТА ======
 def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[int]) -> str:
     act_label = {
         None: "Все действия",
@@ -158,11 +148,6 @@ def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[
 
 
 def _render_feed_text(feed_page) -> str:
-    """Рендерит FeedPage из calendar_feed.get_feed.
-    Ожидается структура:
-      feed_page.days = [ Day(date_local=..., items=[Item(...), ...]), ... ]
-      Item содержит хотя бы: action, plant_name, plant_id, dt_local ИЛИ dt_utc
-    """
     if not getattr(feed_page, "days", None):
         return "Пока пусто."
 
@@ -172,28 +157,24 @@ def _render_feed_text(feed_page) -> str:
         lines.append(f"\n📅 <b>{d:%d.%m (%a)}</b>")
         for it in day.items:
             emoji = ACT_TO_EMOJI.get(it.action, "•")
-            # предпочитаем локальное время, если сервис его дал
             if hasattr(it, "dt_local") and it.dt_local:
                 t = it.dt_local.strftime("%H:%M")
             else:
-                # fallback: показываем UTC (лучше так, чем падать)
                 t = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
             lines.append(f"  {t} {emoji} {it.plant_name} (id:{it.plant_id})")
     return "\n".join(lines).lstrip()
 
 
-# ====== CALLBACKS ======
 @calendar_router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
-    # cal:<cmd>:<mode>:<page>:<act>:<pid>[:...]
     cmd = parts[1] if len(parts) > 1 else "noop"
 
     if cmd == "noop":
         return await cb.answer()
 
     if cmd in ("root", "feed", "page", "act"):
-        mode: Mode = (parts[2] if len(parts) > 2 else "upc")  # upc|hist
+        mode: Mode = (parts[2] if len(parts) > 2 else "upc")
         page = int(parts[3]) if len(parts) > 3 else 1
         act_code = parts[4] if len(parts) > 4 else "all"
         pid = int(parts[5]) if len(parts) > 5 else 0
@@ -212,11 +193,9 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
         )
 
     if cmd == "plan":
-        # запуск мастера расписаний
         return await show_schedule_wizard(cb, state)
 
     if cmd == "done":
-        # Формат: cal:done:<mode>:<page>:<act>:<pid>:<schedule_id>
         try:
             mode: Mode = parts[2]
             page = int(parts[3])
@@ -229,32 +208,24 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
         action = ACT_MAP.get(act_code, None)
         plant_id = pid or None
 
-        # безопасность: проверим владельца без глубоких ленивых связей
         async with new_uow() as uow:
             sch = await uow.schedules.get(schedule_id)
-            if not sch or not sch.active:
+            if not sch or not getattr(sch, "active", True):
                 await cb.answer("Расписание не найдено или отключено", show_alert=True)
-                return await show_calendar_root(cb, datetime.now().year, datetime.now().month,
-                                               action=action, plant_id=plant_id, mode=mode, page=page)
+                return await show_calendar_root(cb, datetime.now().year, datetime.now().month, action=action, plant_id=plant_id, mode=mode, page=page)
 
-            plant = await uow.plants.get(sch.plant_id)
-            if not plant or plant.user_id is None:
-                await cb.answer("Недоступно", show_alert=True)
-                return
-            owner = await uow.users.get_by_id(plant.user_id)
-            if not owner or owner.tg_user_id != cb.from_user.id:
+            plant = await uow.plants.get(getattr(sch, "plant_id", None))
+            if not plant:
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
-            # создаём событие
-            await uow.events.create(
-                plant_id=sch.plant_id,
-                action=sch.action,
-                source="manual",
-            )
-            # commit выполнится на выходе
+            me = await uow.users.get_or_create(cb.from_user.id)
+            if getattr(plant, "user_id", None) != getattr(me, "id", None):
+                await cb.answer("Недоступно", show_alert=True)
+                return
 
-        # перепланировать следующий раз по этому расписанию
+            await uow.events.create(plant_id=sch.plant_id, action=sch.action, source="manual")
+
         from bot.scheduler import plan_next_for_schedule
         await plan_next_for_schedule(cb.bot, schedule_id)
 
@@ -269,5 +240,4 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
             page=page,
         )
 
-    # fallback
     await cb.answer()

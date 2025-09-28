@@ -14,14 +14,12 @@ PREFIX = "plants"
 PAGE_SIZE = 10
 
 
-# ---------- FSM ----------
 class AddPlantStates(StatesGroup):
     waiting_name = State()
     waiting_species_mode = State()
     waiting_species_text = State()
 
 
-# ---------- helpers ----------
 def _slice(items: list, page: int, size: int = PAGE_SIZE):
     total = len(items)
     pages = max(1, (total + size - 1) // size)
@@ -36,8 +34,6 @@ async def _get_user(user_tg_id: int):
 
 
 async def _get_plants_with_filter(user_id: int, species_id: int | None):
-    """Возвращаем список растений пользователя; фильтр по виду — опционально.
-    Не опираемся на ленивые связи: используем только поля модели (name, species_id)."""
     async with new_uow() as uow:
         items = await uow.plants.list_by_user(user_id)
         if species_id:
@@ -50,17 +46,12 @@ async def _get_species(user_id: int):
         return list(await uow.species.list_by_user(user_id))
 
 
-# ---------- keyboards ----------
 def kb_plants_list(page: int, pages: int, species_id: int | None):
     kb = InlineKeyboardBuilder()
-    # пагинация
     kb.button(text="◀️", callback_data=f"{PREFIX}:page:{max(1, page - 1)}:{species_id or 0}")
     kb.button(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop")
     kb.button(text="▶️", callback_data=f"{PREFIX}:page:{min(pages, page + 1)}:{species_id or 0}")
-    # фильтр и действия
-    kb.row(
-        types.InlineKeyboardButton(text="🧬 Фильтр по виду", callback_data=f"{PREFIX}:filter_species:{species_id or 0}")
-    )
+    kb.row(types.InlineKeyboardButton(text="🧬 Фильтр по виду", callback_data=f"{PREFIX}:filter_species:{species_id or 0}"))
     kb.row(
         types.InlineKeyboardButton(text="➕ Добавить растение", callback_data=f"{PREFIX}:add"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
@@ -69,18 +60,14 @@ def kb_plants_list(page: int, pages: int, species_id: int | None):
 
 
 def kb_species_list(species, selected_id: int | None, page: int = 1, page_size: int = 10, *, for_add_flow: bool = False):
-    """Если for_add_flow=True — клики выбирают вид для нового растения.
-       Иначе — клики просто ставят фильтр."""
     items, page, pages, _ = _slice(species, page, page_size)
     kb = InlineKeyboardBuilder()
 
     if for_add_flow:
-        # режим выбора вида при создании растения
         kb.button(text="(без вида)", callback_data=f"{PREFIX}:add_pick_species:0")
         for s in items:
             kb.button(text=s.name, callback_data=f"{PREFIX}:add_pick_species:{s.id}")
     else:
-        # режим фильтрации списка
         mark = "✓ " if not selected_id else ""
         kb.button(text=f"{mark}Все виды", callback_data=f"{PREFIX}:set_species:0:{page}")
         for s in items:
@@ -89,7 +76,6 @@ def kb_species_list(species, selected_id: int | None, page: int = 1, page_size: 
 
     kb.adjust(2)
 
-    # навигация
     if pages > 1:
         if for_add_flow:
             kb.row(
@@ -99,14 +85,11 @@ def kb_species_list(species, selected_id: int | None, page: int = 1, page_size: 
             )
         else:
             kb.row(
-                types.InlineKeyboardButton(text="◀️",
-                    callback_data=f"{PREFIX}:species_page:{max(1, page - 1)}:{selected_id or 0}"),
+                types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:species_page:{max(1, page - 1)}:{selected_id or 0}"),
                 types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-                types.InlineKeyboardButton(text="▶️",
-                    callback_data=f"{PREFIX}:species_page:{min(pages, page + 1)}:{selected_id or 0}"),
+                types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:species_page:{min(pages, page + 1)}:{selected_id or 0}"),
             )
 
-    # «ещё» и «назад»
     if for_add_flow:
         kb.row(
             types.InlineKeyboardButton(text="✍️ Ввести свой вид", callback_data=f"{PREFIX}:species_add_text"),
@@ -129,10 +112,7 @@ def kb_add_species_mode():
     return kb.as_markup()
 
 
-# ---------- public API ----------
-async def show_plants_list(target: types.Message | types.CallbackQuery,
-                           page: int = 1,
-                           species_id: int | None = None):
+async def show_plants_list(target: types.Message | types.CallbackQuery, page: int = 1, species_id: int | None = None):
     if isinstance(target, types.CallbackQuery):
         user_id = target.from_user.id
         message = target.message
@@ -148,11 +128,10 @@ async def show_plants_list(target: types.Message | types.CallbackQuery,
     sub = f"Всего: <b>{total}</b> | Вид: <b>{'Все' if not species_id else f'#{species_id}'}</b>"
     text = header + "\n" + sub + "\n\n" + "Список ваших растений."
 
-    # список (без обращения к ленивой связи species.name)
     lines = []
     if page_items:
         for p in page_items:
-            sp = f" · вид #{getattr(p, 'species_id', None)}" if getattr(p, 'species_id', None) else ""
+            sp = f" · вид #{getattr(p, 'species_id', None)}" if getattr(p, "species_id", None) else ""
             lines.append(f"• {p.name}{sp} (id:{p.id})")
     else:
         lines.append("(здесь пусто)")
@@ -165,7 +144,6 @@ async def show_plants_list(target: types.Message | types.CallbackQuery,
         await message.answer(text + "\n" + "\n".join(lines), reply_markup=kb)
 
 
-# ---------- callbacks ----------
 @plants_router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
@@ -174,13 +152,11 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
     if action == "noop":
         return await cb.answer()
 
-    # пагинация списка: plants:page:<page>:<species_id>
     if action == "page":
         page = int(parts[2])
         species_id = int(parts[3]) or None
         return await show_plants_list(cb, page=page, species_id=species_id)
 
-    # фильтр по виду — показать список видов
     if action == "filter_species":
         species_id = int(parts[2]) or None
         user = await _get_user(cb.from_user.id)
@@ -188,7 +164,6 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         text = "🧬 <b>Фильтр по видам</b>\nВыберите вид или добавьте новый."
         return await cb.message.edit_text(text, reply_markup=kb_species_list(species, species_id, page=1))
 
-    # листать виды (режим фильтра): plants:species_page:<page>:<selected_id>
     if action == "species_page":
         page = int(parts[2])
         selected = int(parts[3]) or None
@@ -197,45 +172,31 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         text = "🧬 <b>Фильтр по видам</b>\nВыберите вид или добавьте новый."
         return await cb.message.edit_text(text, reply_markup=kb_species_list(species, selected, page=page))
 
-    # установить вид-фильтр и вернуться к списку
     if action == "set_species":
         species_id = int(parts[2]) or None
         return await show_plants_list(cb, page=1, species_id=species_id)
 
-    # добавить растение — спросим имя
     if action == "add":
         await state.set_state(AddPlantStates.waiting_name)
         b = InlineKeyboardBuilder()
         b.button(text="↩️ Отмена", callback_data=f"{PREFIX}:back_to_list:1")
-        await cb.message.edit_text(
-            "✍️ Введите <b>название</b> растения сообщением (свободный текст).",
-            reply_markup=b.as_markup()
-        )
+        await cb.message.edit_text("✍️ Введите <b>название</b> растения сообщением (свободный текст).", reply_markup=b.as_markup())
         return await cb.answer()
 
-    # выбор режима вида (после имени)
     if action == "species_pick_list":
-        await state.set_state(AddPlantStates.waiting_species_mode)  # остаёмся в режиме выбора
+        await state.set_state(AddPlantStates.waiting_species_mode)
         user = await _get_user(cb.from_user.id)
         species = await _get_species(user.id)
-        await cb.message.edit_text(
-            "🧬 Выберите <b>вид</b> из списка или введите свой.",
-            reply_markup=kb_species_list(species, selected_id=None, page=1, for_add_flow=True)
-        )
+        await cb.message.edit_text("🧬 Выберите <b>вид</b> из списка или введите свой.", reply_markup=kb_species_list(species, selected_id=None, page=1, for_add_flow=True))
         return await cb.answer()
 
-    # пагинация списка видов в режиме добавления
     if action == "add_species_page":
         page = int(parts[2])
         user = await _get_user(cb.from_user.id)
         species = await _get_species(user.id)
-        await cb.message.edit_text(
-            "🧬 Выберите <b>вид</b> из списка или введите свой.",
-            reply_markup=kb_species_list(species, selected_id=None, page=page, for_add_flow=True)
-        )
+        await cb.message.edit_text("🧬 Выберите <b>вид</b> из списка или введите свой.", reply_markup=kb_species_list(species, selected_id=None, page=page, for_add_flow=True))
         return await cb.answer()
 
-    # пользователь выбрал вид для нового растения (или 0 = без вида)
     if action == "add_pick_species":
         species_id = int(parts[2]) or None
         data = await state.get_data()
@@ -247,15 +208,13 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
 
         async with new_uow() as uow:
             user = await uow.users.get_or_create(cb.from_user.id)
-            # пробуем передать species_id, если репозиторий это поддерживает
             try:
                 await uow.plants.create(user_id=user.id, name=plant_name, species_id=species_id)
             except TypeError:
-                # fallback: создать, затем обновить (если у тебя есть такой метод)
                 plant = await uow.plants.create(user_id=user.id, name=plant_name)
                 if species_id:
                     try:
-                        await uow.plants.set_species(plant.id, species_id)  # если есть такой метод
+                        await uow.plants.set_species(plant.id, species_id)
                     except AttributeError:
                         pass
 
@@ -263,28 +222,21 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer("Создано ✅", show_alert=False)
         return await show_plants_list(cb, page=1, species_id=None)
 
-    # ввести вид текстом (в режиме добавления)
     if action == "species_add_text":
         await state.set_state(AddPlantStates.waiting_species_text)
         b = InlineKeyboardBuilder()
         b.button(text="↩️ Отмена", callback_data=f"{PREFIX}:back_to_list:1")
-        await cb.message.edit_text(
-            "✍️ Введите название <b>вида</b> сообщением.",
-            reply_markup=b.as_markup()
-        )
+        await cb.message.edit_text("✍️ Введите название <b>вида</b> сообщением.", reply_markup=b.as_markup())
         return await cb.answer()
 
-    # отмена / назад
     if action == "back_to_list":
         await state.clear()
         page = int(parts[2]) if len(parts) > 2 else 1
         return await show_plants_list(cb, page=page, species_id=None)
 
-    # fallback
     await cb.answer()
 
 
-# ---------- message handlers (FSM) ----------
 @plants_router.message(AddPlantStates.waiting_name)
 async def input_plant_name(m: types.Message, state: FSMContext):
     name = (m.text or "").strip()
@@ -292,10 +244,7 @@ async def input_plant_name(m: types.Message, state: FSMContext):
         return await m.answer("Название пустое. Введите ещё раз или нажмите «Отмена».")
     await state.update_data(new_plant_name=name)
     await state.set_state(AddPlantStates.waiting_species_mode)
-    await m.answer(
-        f"Ок, имя: <b>{name}</b>\nТеперь выберите способ указать вид:",
-        reply_markup=kb_add_species_mode()
-    )
+    await m.answer(f"Ок, имя: <b>{name}</b>\nТеперь выберите способ указать вид:", reply_markup=kb_add_species_mode())
 
 
 @plants_router.message(AddPlantStates.waiting_species_text)
@@ -315,7 +264,6 @@ async def input_species_text(m: types.Message, state: FSMContext):
         try:
             await uow.plants.create(user_id=user.id, name=plant_name, species_id=getattr(sp, "id", None))
         except TypeError:
-            # fallback (см. комментарий в обработчике add_pick_species)
             plant = await uow.plants.create(user_id=user.id, name=plant_name)
             try:
                 await uow.plants.set_species(plant.id, getattr(sp, "id", None))
