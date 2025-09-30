@@ -28,7 +28,10 @@ async def init_db_if_needed():
 
 
 async def main():
-    logging.basicConfig(level=getattr(logging, "INFO", logging.INFO))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
 
     await init_db_if_needed()
@@ -47,11 +50,13 @@ async def main():
     dp.include_router(quick_done_router)
 
     start_scheduler()
-    await plan_all_active(bot)
+    await plan_all_active()  # <<< без bot
 
     try:
         await dp.start_polling(bot)
     finally:
+        # аккуратно закрываем ресурсы
+        await bot.session.close()
         await engine.dispose()
 
 

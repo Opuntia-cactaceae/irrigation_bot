@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from datetime import time
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import ActionType
+from bot.db_repo.models import ActionType, ScheduleType
 
 router = Router(name="schedule_cmd")
 
@@ -56,7 +56,7 @@ async def set_schedule(m: types.Message):
             return await m.answer("Растение не найдено.")
 
         # Проверим владельца
-        me = await uow.users.get_or_create(m.from_user.id)  # гарантируй, что get_or_create делает flush -> есть me.id
+        me = await uow.users.get_or_create(m.from_user.id)
         if getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно. Это растение не принадлежит вам.")
 
@@ -82,11 +82,11 @@ async def set_schedule(m: types.Message):
                 return await m.answer("Для interval укажи целое число дней, например: 3")
             created = await uow.schedules.create(
                 plant_id=plant.id,
-                type="interval",
+                type=ScheduleType.INTERVAL,   # enum вместо строки
                 interval_days=days,
                 local_time=local_t,
                 active=True,
-                action=getattr(ActionType, "WATERING", None),
+                action=ActionType.WATERING,
             )
         else:
             mask = _parse_weekly_mask(spec)
@@ -94,26 +94,20 @@ async def set_schedule(m: types.Message):
                 return await m.answer("Для weekly укажи дни, например: Mon,Thu")
             created = await uow.schedules.create(
                 plant_id=plant.id,
-                type="weekly",
+                type=ScheduleType.WEEKLY,     # enum вместо строки
                 weekly_mask=mask,
                 local_time=local_t,
                 active=True,
-                action=getattr(ActionType, "WATERING", None),
+                action=ActionType.WATERING,
             )
 
-    planned_ok = False
+    # Запланируем джобу (вариант B: в args только примитивы)
     try:
         from bot.scheduler import plan_next_for_schedule
         if created and getattr(created, "id", None) is not None:
-            await plan_next_for_schedule(m.bot, created.id)
-            planned_ok = True
+            await plan_next_for_schedule(created.id)
     except Exception:
+        # не критично — пользователь всё равно сохранил расписание
         pass
-    if not planned_ok:
-        try:
-            from bot.scheduler import plan_next_for_plant
-            await plan_next_for_plant(m.bot, plant_id)
-        except Exception:
-            pass
 
     await m.answer("Расписание сохранено ✅")

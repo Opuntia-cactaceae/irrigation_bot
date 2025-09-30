@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import time
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import ActionType
+from bot.db_repo.models import ActionType, ScheduleType
 from bot.scheduler import plan_next_for_schedule
 
 router = Router(name="schedule_inline")
@@ -54,8 +54,6 @@ async def show_schedule_wizard(target: types.Message | types.CallbackQuery, stat
 
     async with new_uow() as uow:
         user = await uow.users.get_or_create(tg_id)
-        # если есть специализированный метод со связями — отлично,
-        # иначе используем простой список
         try:
             plants = await uow.plants.list_by_user(user.id)
         except AttributeError:
@@ -101,7 +99,6 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
 
     if action == "pick_plant":
         plant_id = int(parts[2])
-        # проверка владения растением (без get_by_id)
         async with new_uow() as uow:
             plant = await uow.plants.get(plant_id)
             if not plant:
@@ -212,7 +209,8 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
                         pass
                     sch = await uow.schedules.create(
                         plant_id=plant_id, action=act,
-                        type="interval", interval_days=interval_days,
+                        type=ScheduleType.INTERVAL,
+                        interval_days=interval_days,
                         local_time=local_t, active=True
                     )
             else:
@@ -231,13 +229,15 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
                         pass
                     sch = await uow.schedules.create(
                         plant_id=plant_id, action=act,
-                        type="weekly", weekly_mask=weekly_mask,
+                        type=ScheduleType.WEEKLY,
+                        weekly_mask=weekly_mask,
                         local_time=local_t, active=True
                     )
 
         # планирование вне UoW
         try:
-            await plan_next_for_schedule(cb.bot, sch.id)
+            if sch and getattr(sch, "id", None) is not None:
+                await plan_next_for_schedule(sch.id)
         except Exception:
             # не критично — пользователь всё равно сохранил расписание
             pass
