@@ -180,13 +180,14 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         local_t = time(hour=hh, minute=mm)
 
         async with new_uow() as uow:
-            # проверка владельца повторно, на всякий
+            # повторная проверка владельца без UsersRepo.get_by_id
             plant = await uow.plants.get(plant_id)
             if not plant:
                 await cb.answer("Растение не найдено", show_alert=True)
                 return
-            owner = await uow.users.get_by_id(getattr(plant, "user_id", None))
-            if not owner or owner.tg_user_id != cb.from_user.id:
+
+            me = await uow.users.get_or_create(cb.from_user.id)
+            if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
