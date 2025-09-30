@@ -126,8 +126,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         return await _screen_edit_interval(cb, state)
 
     if action == "kind_weekly":
-        mask = (1 << 0) | (1 << 3)  # Пн, Чт по умолчанию
-        await state.update_data(kind="weekly", weekly_mask=mask, hh=9, mm=0)
+        await state.update_data(kind="weekly", weekly_mask=0, hh=9, mm=0)
         await state.set_state(SchStates.editing_weekly)
         return await _screen_edit_weekly(cb, state)
 
@@ -327,7 +326,7 @@ async def _screen_edit_interval(cb: types.CallbackQuery, state: FSMContext):
 
 async def _screen_edit_weekly(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    mask = int(data.get("weekly_mask", 1))
+    mask = int(data.get("weekly_mask", 0))
     hh = int(data.get("hh", 9))
     mm = int(data.get("mm", 0))
 
