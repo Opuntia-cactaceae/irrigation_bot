@@ -113,11 +113,10 @@ class Schedule(Base):
 
     plant: Mapped["Plant"] = relationship(back_populates="schedules")
 
-    # ✅ добавляем обратную связь к Event.schedule
     events: Mapped[list["Event"]] = relationship(
         back_populates="schedule",
-        passive_deletes=True,   # т.к. FK ondelete=SET NULL — события остаются
-        cascade="save-update, merge",  # без delete-orphan
+        passive_deletes=True,
+        cascade="save-update, merge",
     )
 
 
