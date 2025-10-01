@@ -15,20 +15,11 @@ from apscheduler.events import (
 )
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from bot.config import settings
-from bot.db_repo.base import AsyncSessionLocal
-from bot.db_repo.models import (
-    ActionType,
-    Event,
-    Plant,
-    Schedule,
-    ScheduleType,
-    User,
-)
+from bot.db_repo.models import ActionType, Schedule, ScheduleType, User, Plant
 from bot.services.rules import next_by_interval, next_by_weekly
+from bot.db_repo.unit_of_work import new_uow
 
 # ----------------------------------
 # ЛОГГЕР
@@ -37,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------------
 # APSCHEDULER: jobstore (SQLAlchemy)
-# НУЖЕН синхронный драйвер (psycopg/pg8000), не asyncpg
 # ----------------------------------
 SYNC_DB_URL = (
     os.getenv("DATABASE_URL_SYNC")
@@ -45,9 +35,8 @@ SYNC_DB_URL = (
         "+asyncpg", ""
     )
 )
-
 jobstores = {"default": SQLAlchemyJobStore(url=SYNC_DB_URL, tablename="apscheduler_jobs")}
-scheduler = AsyncIOScheduler(jobstores=jobstores)  # таймзону не меняем, как и просили
+scheduler = AsyncIOScheduler(jobstores=jobstores)  # таймзону scheduler не меняем
 
 # ----------------------------------
 # ВСПОМОГАТЕЛЬНОЕ
@@ -64,10 +53,6 @@ def _job_id(schedule_id: int) -> str:
 
 
 def _is_interval_type(t) -> bool:
-    """
-    Унифицированная проверка типа расписания:
-    поддерживаем и строки ("interval"/"weekly"), и Enum ScheduleType.
-    """
     if t == ScheduleType.INTERVAL:
         return True
     if t == ScheduleType.WEEKLY:
@@ -84,6 +69,9 @@ def _calc_next_run_utc(
 ) -> datetime:
     """
     Возвращает ближайшее наступление (UTC) для данного расписания, строго > now_utc.
+    Гарантии:
+      • interval: если локальное время сегодня ещё не прошло — ставим на СЕГОДНЯ.
+      • weekly: если текущий локальный день в маске и время не прошло — СЕГОДНЯ, иначе — ближайший.
     """
     if _is_interval_type(sch.type):
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
@@ -119,7 +107,6 @@ def _on_job_event(event: JobExecutionEvent):
 
 
 def _heartbeat():
-    # Пульс: видно, что планировщик жив и сколько задач сейчас зарегистрировано
     try:
         logger.info("[SCHED HEARTBEAT] jobs=%d", len(scheduler.get_jobs()))
     except Exception:
@@ -130,20 +117,12 @@ def _heartbeat():
 # ЗАДАНИЕ: ОТПРАВИТЬ НАПОМИНАНИЕ
 # ----------------------------------
 async def send_reminder(schedule_id: int):
-    """
-    Вызывается APScheduler-ом в нужный момент.
-    ВНИМАНИЕ: никаких живых объектов (Bot/Session) в args! Bot создаём локально.
-    """
     logger.info("[JOB START] schedule_id=%s", schedule_id)
 
     bot = Bot(token=settings.BOT_TOKEN)
     try:
-        async with AsyncSessionLocal() as session:
-            sch: Schedule | None = await session.get(
-                Schedule,
-                schedule_id,
-                options=(selectinload(Schedule.plant).selectinload(Plant.user),),
-            )
+        async with new_uow() as uow:
+            sch = await uow.jobs.get_schedule(schedule_id)
             if not sch or not sch.active:
                 logger.warning("[JOB SKIP] schedule_id=%s inactive/missing", schedule_id)
                 return
@@ -166,11 +145,10 @@ async def send_reminder(schedule_id: int):
             except Exception as e:
                 logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
 
-            # лог авто-события
-            ev = Event(plant_id=plant.id, action=sch.action, source="auto")
-            session.add(ev)
-            await session.commit()
-            logger.debug("[EVENT LOGGED] event_id=%s schedule_id=%s", ev.id, schedule_id)
+            # лог события — строго привязка к расписанию
+            ev_id = await uow.jobs.log_event(schedule_id)
+            logger.debug("[EVENT LOGGED] event_id=%s schedule_id=%s", ev_id, schedule_id)
+
     finally:
         await bot.session.close()
 
@@ -182,20 +160,10 @@ async def send_reminder(schedule_id: int):
 # ПЛАНИРОВАНИЕ ОДНОГО РАСПИСАНИЯ
 # ----------------------------------
 async def plan_next_for_schedule(schedule_id: int):
-    """
-    Пересчитать и (пере)создать job для конкретного Schedule.
-    """
-    async with AsyncSessionLocal() as session:
-        sch: Schedule | None = await session.get(
-            Schedule,
-            schedule_id,
-            options=(
-                selectinload(Schedule.plant).selectinload(Plant.user),
-                selectinload(Schedule.plant).selectinload(Plant.events),
-            ),
-        )
+    async with new_uow() as uow:
+        sch = await uow.jobs.get_schedule(schedule_id)
         if not sch or not sch.active:
-            # удалить джоб, если он остался
+            # удалить job, если осталась
             try:
                 scheduler.remove_job(_job_id(schedule_id))
                 logger.info("[JOB REMOVED] schedule_id=%s", schedule_id)
@@ -207,40 +175,39 @@ async def plan_next_for_schedule(schedule_id: int):
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
-        # последнее событие именно по этому действию (для данного растения)
-        last = max(
-            (e.done_at_utc for e in (sch.plant.events or []) if e.action == sch.action),
-            default=None,
-        )
+        # последняя отметка ИМЕННО по этому расписанию
+        last = await uow.jobs.get_last_event_time(schedule_id)
 
         run_at = _calc_next_run_utc(
             sch=sch, user_tz=tz, last_event_utc=last, now_utc=now_utc
         )
+
         try:
-            # для наглядности — выведем и локальное время пользователя
             loc = pytz.timezone(tz)
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s run_at_local=%s tz=%s",
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s last_event_utc=%s run_at_utc=%s run_at_local=%s tz=%s",
                 schedule_id,
                 user.id,
                 sch.plant.id,
                 sch.action,
+                last.isoformat() if last else None,
                 run_at.isoformat(),
                 run_at.astimezone(loc).strftime("%Y-%m-%d %H:%M:%S"),
                 tz,
             )
         except Exception:
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s tz=%s",
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s last_event_utc=%s run_at_utc=%s tz=%s",
                 schedule_id,
                 user.id,
                 sch.plant.id,
                 sch.action,
+                last.isoformat() if last else None,
                 run_at.isoformat(),
                 tz,
             )
 
-    # пересоздаём job
+    # пересоздаём job (1:1 с расписанием)
     job_id = _job_id(schedule_id)
     try:
         scheduler.remove_job(job_id)
@@ -252,8 +219,8 @@ async def plan_next_for_schedule(schedule_id: int):
         trigger="date",
         id=job_id,
         run_date=run_at,
-        args=[schedule_id],  # только примитивы!
-        jobstore="default",  # явно сохраняем в БД
+        args=[schedule_id],
+        jobstore="default",
         replace_existing=True,
         misfire_grace_time=3600,  # 1 час на отставание
         coalesce=True,
@@ -266,35 +233,19 @@ async def plan_next_for_schedule(schedule_id: int):
 # ПЛАНИРОВАНИЕ ДЛЯ ВСЕХ АКТИВНЫХ
 # ----------------------------------
 async def plan_all_active():
-    """
-    Пройтись по всем активным расписаниям и перепланировать их job.
-    Вызывай при старте бота.
-    """
-    async with AsyncSessionLocal() as session:
-        q = (
-            select(Schedule)
-            .where(Schedule.active.is_(True))
-            .options(
-                selectinload(Schedule.plant).selectinload(Plant.user),
-                selectinload(Schedule.plant).selectinload(Plant.events),
-            )
-        )
-        schedules = (await session.execute(q)).scalars().all()
-
-    logger.info("[PLAN ALL] active_schedules=%d", len(schedules))
-    for sch in schedules:
-        await plan_next_for_schedule(sch.id)
+    async with new_uow() as uow:
+        schedules = await uow.jobs.get_active_schedules()
+        logger.info("[PLAN ALL] active_schedules=%d", len(schedules))
+        # важный момент: планируем по одному, чтобы для каждого был свой независимый job
+        for sch in schedules:
+            await plan_next_for_schedule(sch.id)
 
 
 # ----------------------------------
 # ЖИЗНЕННЫЙ ЦИКЛ ПЛАНИРОВЩИКА
 # ----------------------------------
 def start_scheduler():
-    """
-    Запуск APScheduler (один раз при старте приложения).
-    """
     if not scheduler.running:
-        # Диагностика: слушатели событий + «пульс»
         scheduler.add_listener(
             _on_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED
         )

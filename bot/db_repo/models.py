@@ -118,13 +118,25 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    plant_id: Mapped[int] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
+    plant_id: Mapped[int] = mapped_column(
+        ForeignKey("plants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    schedule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("schedules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
     done_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
-    source: Mapped[str] = mapped_column(String(16))  # 'manual' | 'auto'
+    source: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+    )
 
-    plant: Mapped[Plant] = relationship(back_populates="events")
+    plant: Mapped["Plant"] = relationship(back_populates="events")
+    schedule: Mapped["Schedule"] = relationship(back_populates="events")

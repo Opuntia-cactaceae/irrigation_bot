@@ -9,7 +9,7 @@ from datetime import time
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType, ScheduleType
-from bot.scheduler import plan_next_for_schedule
+from bot.scheduler import plan_next_for_schedule, scheduler as aps
 
 router = Router(name="schedule_inline")
 
@@ -39,6 +39,25 @@ def _action_from_code(code: str) -> ActionType:
 
 def _action_to_code(a: ActionType) -> str:
     return {"watering": "w", "fertilizing": "f", "repotting": "r"}[a.value]
+
+
+def _job_id(schedule_id: int) -> str:
+    return f"sch:{schedule_id}"
+
+
+def _fmt_schedule(s) -> str:
+    # s.type может быть Enum или строка "interval"/"weekly"
+    s_type = getattr(s.type, "value", s.type)
+    if s_type == "interval":
+        return f"⏱ каждые {s.interval_days} дн в {s.local_time.strftime('%H:%M')}"
+    else:
+        days = []
+        mask = int(getattr(s, "weekly_mask", 0) or 0)
+        for i, lbl in enumerate(WEEK_EMOJI):
+            if mask & (1 << i):
+                days.append(lbl)
+        days_txt = ",".join(days) if days else "—"
+        return f"🗓 {days_txt} в {s.local_time.strftime('%H:%M')}"
 
 
 async def show_schedule_wizard(target: types.Message | types.CallbackQuery, state: FSMContext, page: int = 1):
@@ -130,6 +149,36 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         await state.set_state(SchStates.editing_weekly)
         return await _screen_edit_weekly(cb, state)
 
+    # ---------- Раздел управления существующими (удаление) ----------
+    if action == "manage":
+        page = int(parts[2]) if len(parts) > 2 else 1
+        return await _screen_manage_existing(cb, state, page)
+
+    if action == "manpg":
+        page = int(parts[2])
+        return await _screen_manage_existing(cb, state, page)
+
+    if action == "del":
+        sch_id = int(parts[2])
+        # удаляем запись + снимаем APS job
+        async with new_uow() as uow:
+            try:
+                await uow.schedules.delete(sch_id)
+            except AttributeError:
+                # Fallback: если delete нет — молча попробуем пометить неактивным
+                try:
+                    await uow.schedules.update(sch_id, active=False)
+                except AttributeError:
+                    pass
+        try:
+            aps.remove_job(_job_id(sch_id))
+        except Exception:
+            pass
+        await cb.answer("Удалено", show_alert=False)
+        # вернуть на экран списка
+        return await _screen_manage_existing(cb, state)
+    # ---------------------------------------------------------------
+
     if action == "ival_inc":
         delta = int(parts[2])
         data = await state.get_data()
@@ -179,7 +228,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         local_t = time(hour=hh, minute=mm)
 
         async with new_uow() as uow:
-            # повторная проверка владельца без UsersRepo.get_by_id
+            # повторная проверка владельца
             plant = await uow.plants.get(plant_id)
             if not plant:
                 await cb.answer("Растение не найдено", show_alert=True)
@@ -190,56 +239,30 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
-            sch = None
+            # создаём НОВОЕ расписание (старые не трогаем)
             if kind == "interval":
                 interval_days = int(data["interval_days"])
-                # сначала пробуем upsert_interval
-                try:
-                    sch = await uow.schedules.upsert_interval(
-                        plant_id=plant_id, action=act,
-                        interval_days=interval_days, local_time=local_t
-                    )
-                except AttributeError:
-                    # совместимость: удалить старые и создать новое
-                    try:
-                        old_list = await uow.schedules.list_by_plant_action(plant_id, act)
-                        for s in old_list:
-                            await uow.schedules.delete(s.id)
-                    except AttributeError:
-                        pass
-                    sch = await uow.schedules.create(
-                        plant_id=plant_id, action=act,
-                        type=ScheduleType.INTERVAL,
-                        interval_days=interval_days,
-                        local_time=local_t, active=True
-                    )
+                sch = await uow.schedules.create(
+                    plant_id=plant_id, action=act,
+                    type=ScheduleType.INTERVAL,
+                    interval_days=interval_days,
+                    local_time=local_t, active=True
+                )
             else:
                 weekly_mask = int(data["weekly_mask"])
-                try:
-                    sch = await uow.schedules.upsert_weekly(
-                        plant_id=plant_id, action=act,
-                        weekly_mask=weekly_mask, local_time=local_t
-                    )
-                except AttributeError:
-                    try:
-                        old_list = await uow.schedules.list_by_plant_action(plant_id, act)
-                        for s in old_list:
-                            await uow.schedules.delete(s.id)
-                    except AttributeError:
-                        pass
-                    sch = await uow.schedules.create(
-                        plant_id=plant_id, action=act,
-                        type=ScheduleType.WEEKLY,
-                        weekly_mask=weekly_mask,
-                        local_time=local_t, active=True
-                    )
+                sch = await uow.schedules.create(
+                    plant_id=plant_id, action=act,
+                    type=ScheduleType.WEEKLY,
+                    weekly_mask=weekly_mask,
+                    local_time=local_t, active=True
+                )
 
-        # планирование вне UoW
+        # планирование вне UOW (после коммита)
         try:
             if sch and getattr(sch, "id", None) is not None:
                 await plan_next_for_schedule(sch.id)
         except Exception:
-            # не критично — пользователь всё равно сохранил расписание
+            # не критично — можно перепланировать позже
             pass
 
         await state.clear()
@@ -261,7 +284,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
             "Отменено.",
             reply_markup=InlineKeyboardBuilder()
                 .row(
-                    types.InlineKeyboardButton(text="📅 К календарю", callback_data="cal:feed:upc:1:all:0"),
+                    types.InlineKeyboardButton(text="📅 К календарю", callback_data=f"cal:feed:upc:1:all:0"),
                     types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
                 ).as_markup()
         )
@@ -284,9 +307,13 @@ async def _screen_choose_kind(cb: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="⏱ Каждые N дней", callback_data=f"{PREFIX}:kind_interval")
     kb.button(text="🗓 По дням недели", callback_data=f"{PREFIX}:kind_weekly")
+    kb.button(text="🗑 Удалить существующие", callback_data=f"{PREFIX}:manage:1")
     kb.adjust(1)
     kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
-    await cb.message.edit_text("Шаг 3/5: выберите <b>тип расписания</b>.", reply_markup=kb.as_markup())
+    await cb.message.edit_text(
+        "Шаг 3/5: выберите <b>тип расписания</b> или удалите существующие.",
+        reply_markup=kb.as_markup(),
+    )
     await cb.answer()
 
 
@@ -359,3 +386,108 @@ async def _screen_edit_weekly(cb: types.CallbackQuery, state: FSMContext):
 
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer()
+
+
+# ---------- Экран управления существующими расписаниями (удаление) ----------
+async def _screen_manage_existing(cb: types.CallbackQuery, state: FSMContext, page: int = 1):
+    data = await state.get_data()
+    try:
+        plant_id = int(data["plant_id"])
+        act = ActionType(data["action"])
+    except Exception:
+        await cb.answer("Не хватает данных", show_alert=True)
+        return
+
+    async with new_uow() as uow:
+        # Список расписаний по растению и действию
+        try:
+            schedules = await uow.schedules.list_by_plant_action(plant_id, act)
+        except AttributeError:
+            # fallback: фильтруем вручную
+            try:
+                all_for_plant = await uow.schedules.list_by_plant(plant_id)
+                schedules = [s for s in all_for_plant if getattr(s, "action", None) == act]
+            except AttributeError:
+                schedules = []
+
+    page_items, page, pages, total = _slice(schedules, page, PAGE_SIZE)
+
+    title = "🗑 Управление расписаниями\nВыберите, что удалить."
+    kb = InlineKeyboardBuilder()
+
+    if page_items:
+        for s in page_items:
+            kb.row(
+                types.InlineKeyboardButton(
+                    text=f"#{s.id} — {_fmt_schedule(s)}",
+                    callback_data=f"{PREFIX}:noop",
+                )
+            )
+            kb.row(
+                types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"{PREFIX}:del:{s.id}"),
+            )
+    else:
+        kb.button(text="(для этого действия расписаний нет)", callback_data=f"{PREFIX}:noop")
+        kb.adjust(1)
+
+    # пагинация
+    kb.row(
+        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:manpg:{max(1, page - 1)}"),
+        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
+        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:manpg:{min(pages, page + 1)}"),
+    )
+
+    # дополнительные действия
+    if total:
+        kb.row(types.InlineKeyboardButton(text="🗑 Удалить всё", callback_data=f"{PREFIX}:del_all"))
+    kb.row(
+        types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:set_action:{_action_to_code(act)}"),
+        types.InlineKeyboardButton(text="🏁 Выход", callback_data=f"{PREFIX}:cancel"),
+    )
+
+    await cb.message.edit_text(title, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data == f"{PREFIX}:del_all")
+async def _on_del_all(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    try:
+        plant_id = int(data["plant_id"])
+        act = ActionType(data["action"])
+    except Exception:
+        await cb.answer("Не хватает данных", show_alert=True)
+        return
+
+    # собираем id-шники для снятия джоб
+    ids = []
+    async with new_uow() as uow:
+        try:
+            items = await uow.schedules.list_by_plant_action(plant_id, act)
+        except AttributeError:
+            try:
+                all_for_plant = await uow.schedules.list_by_plant(plant_id)
+                items = [s for s in all_for_plant if getattr(s, "action", None) == act]
+            except AttributeError:
+                items = []
+        ids = [s.id for s in items]
+        # удаляем все
+        for sid in ids:
+            try:
+                await uow.schedules.delete(sid)
+            except AttributeError:
+                # Fallback: если delete нет — помечаем неактивным
+                try:
+                    await uow.schedules.update(sid, active=False)
+                except AttributeError:
+                    pass
+
+    # снимаем джобы
+    for sid in ids:
+        try:
+            aps.remove_job(_job_id(sid))
+        except Exception:
+            pass
+
+    await cb.answer("Удалены все расписания этого типа для растения", show_alert=False)
+    return await _screen_manage_existing(cb, state)
