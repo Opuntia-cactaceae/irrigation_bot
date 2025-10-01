@@ -111,7 +111,14 @@ class Schedule(Base):
     local_time: Mapped[time] = mapped_column(Time, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    plant: Mapped[Plant] = relationship(back_populates="schedules")
+    plant: Mapped["Plant"] = relationship(back_populates="schedules")
+
+    # ✅ добавляем обратную связь к Event.schedule
+    events: Mapped[list["Event"]] = relationship(
+        back_populates="schedule",
+        passive_deletes=True,   # т.к. FK ondelete=SET NULL — события остаются
+        cascade="save-update, merge",  # без delete-orphan
+    )
 
 
 class Event(Base):
