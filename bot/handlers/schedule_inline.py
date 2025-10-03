@@ -104,6 +104,70 @@ async def show_schedule_wizard(target: types.Message | types.CallbackQuery, stat
         await message.answer(text, reply_markup=kb.as_markup())
 
 
+async def _screen_quick_manage(cb: types.CallbackQuery, state: FSMContext, page: int = 1):
+    data = await state.get_data()
+    try:
+        plant_id = int(data["plant_id"])
+    except Exception:
+        await cb.answer("Не хватает данных (растение)", show_alert=True)
+        return
+
+    # тянем все расписания по растению, любых действий
+    async with new_uow() as uow:
+        try:
+            schedules = await uow.schedules.list_by_plant(plant_id)
+        except AttributeError:
+            # если репозиторий без метода — соберём из связей растения
+            try:
+                plant = await uow.plants.get(plant_id)
+                schedules = list(getattr(plant, "schedules", []) or [])
+            except Exception:
+                schedules = []
+
+    page_items, page, pages, total = _slice(schedules, page, PAGE_SIZE)
+
+    title = "🗑 Быстрое удаление расписаний\n(по выбранному растению)"
+    kb = InlineKeyboardBuilder()
+
+    if page_items:
+        for s in page_items:
+            # строка с краткой инфой
+            kb.row(
+                types.InlineKeyboardButton(
+                    text=f"#{s.id} — {_fmt_schedule(s)}",
+                    callback_data=f"{PREFIX}:noop"
+                )
+            )
+            # кнопка удалить
+            kb.row(
+                types.InlineKeyboardButton(
+                    text="🗑 Удалить",
+                    callback_data=f"{PREFIX}:qdel:{s.id}"
+                )
+            )
+    else:
+        kb.button(text="(расписаний нет)", callback_data=f"{PREFIX}:noop")
+        kb.adjust(1)
+
+    # пагинация
+    kb.row(
+        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:qmanpg:{max(1, page - 1)}"),
+        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
+        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:qmanpg:{min(pages, page + 1)}"),
+    )
+
+    if total:
+        kb.row(types.InlineKeyboardButton(text="🗑 Удалить всё", callback_data=f"{PREFIX}:qdel_all"))
+    # назад — в выбор действия (шаг 2)
+    kb.row(
+        types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:set_action:w"),  # вернёмся в шаг 2
+        types.InlineKeyboardButton(text="🏁 Выход", callback_data=f"{PREFIX}:cancel"),
+    )
+
+    await cb.message.edit_text(title, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
@@ -115,6 +179,79 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
     if action == "page":
         page = int(parts[2])
         return await show_schedule_wizard(cb, state, page=page)
+
+    # ▼ Новые быстрые ветки
+    if action == "qmanage":
+        page = int(parts[2]) if len(parts) > 2 else 1
+        return await _screen_quick_manage(cb, state, page)
+
+    if action == "qmanpg":
+        page = int(parts[2])
+        return await _screen_quick_manage(cb, state, page)
+
+    if action == "qdel":
+        # однотаповое удаление конкретного расписания
+        try:
+            sch_id = int(parts[2])
+        except Exception:
+            await cb.answer("Не получилось удалить", show_alert=True)
+            return await _screen_quick_manage(cb, state)
+
+        async with new_uow() as uow:
+            try:
+                await uow.schedules.delete(sch_id)
+            except AttributeError:
+                try:
+                    await uow.schedules.update(sch_id, active=False)
+                except AttributeError:
+                    pass
+
+        # снимаем APS job
+        try:
+            aps.remove_job(_job_id(sch_id))
+        except Exception:
+            pass
+
+        await cb.answer("Удалено 🗑", show_alert=False)
+        return await _screen_quick_manage(cb, state)
+
+    if action == "qdel_all":
+        # удаляем все расписания по выбранному растению
+        data = await state.get_data()
+        try:
+            plant_id = int(data["plant_id"])
+        except Exception:
+            await cb.answer("Не хватает данных (растение)", show_alert=True)
+            return
+
+        ids = []
+        async with new_uow() as uow:
+            try:
+                items = await uow.schedules.list_by_plant(plant_id)
+            except AttributeError:
+                try:
+                    plant = await uow.plants.get(plant_id)
+                    items = list(getattr(plant, "schedules", []) or [])
+                except Exception:
+                    items = []
+            ids = [s.id for s in items]
+            for sid in ids:
+                try:
+                    await uow.schedules.delete(sid)
+                except AttributeError:
+                    try:
+                        await uow.schedules.update(sid, active=False)
+                    except AttributeError:
+                        pass
+
+        for sid in ids:
+            try:
+                aps.remove_job(_job_id(sid))
+            except Exception:
+                pass
+
+        await cb.answer("Удалены все расписания растения", show_alert=False)
+        return await _screen_quick_manage(cb, state)
 
     if action == "pick_plant":
         plant_id = int(parts[2])
@@ -297,6 +434,7 @@ async def _screen_choose_action(cb: types.CallbackQuery):
     kb.button(text="💧 Полив",     callback_data=f"{PREFIX}:set_action:w")
     kb.button(text="💊 Удобрения", callback_data=f"{PREFIX}:set_action:f")
     kb.button(text="🪴 Пересадка", callback_data=f"{PREFIX}:set_action:r")
+    kb.button(text="🗑 Быстрое удаление (все)", callback_data=f"{PREFIX}:qmanage:1")
     kb.adjust(1)
     kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
     await cb.message.edit_text("Шаг 2/5: выберите <b>тип действия</b>.", reply_markup=kb.as_markup())
