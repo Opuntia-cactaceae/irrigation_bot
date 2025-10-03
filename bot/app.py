@@ -14,8 +14,10 @@ from bot.handlers.main_menu import main_menu_router
 from bot.handlers.help_inline import help_router
 from bot.handlers.plants_inline import plants_router
 from bot.handlers.calendar_inline import calendar_router
+from bot.handlers.schedule_delete_inline import delete_router
 from bot.handlers.schedule_inline import router as schedule_router
 from bot.handlers.quick_done_inline import router as quick_done_router
+
 
 from bot.scheduler import start_scheduler, plan_all_active
 
@@ -48,6 +50,7 @@ async def main():
     dp.include_router(calendar_router)
     dp.include_router(schedule_router)
     dp.include_router(quick_done_router)
+    dp.include_router(delete_router)
 
     start_scheduler()
     await plan_all_active()  # <<< без bot

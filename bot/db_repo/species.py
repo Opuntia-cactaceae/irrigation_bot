@@ -8,6 +8,24 @@ class SpeciesRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get(self, species_id: int) -> Optional[Species]:
+        return await self.session.get(Species, species_id)
+
+    async def delete(self, species_id: int) -> None:
+        obj = await self.get(species_id)
+        if obj is not None:
+            await self.session.delete(obj)
+            await self.session.flush()
+
+    async def update(self, species_id: int, **fields) -> None:
+        obj = await self.get(species_id)
+        if obj is None:
+            return
+        for k, v in fields.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        await self.session.flush()
+
     async def get_or_create(self, user_id: int, name: str) -> Species:
         q = select(Species).where(Species.user_id == user_id, Species.name == name)
         s = (await self.session.execute(q)).scalar_one_or_none()

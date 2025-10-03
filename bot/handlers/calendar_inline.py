@@ -122,6 +122,10 @@ def _kb_calendar(
             text="🗓️ Запланировать",
             callback_data=f"{PREFIX}:plan:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
+        types.InlineKeyboardButton(
+            text="🗑 Удалить расписания",
+            callback_data="sdel:list:1",
+        ),
     )
     kb.row(
         types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
