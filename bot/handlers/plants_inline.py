@@ -330,14 +330,15 @@ async def show_plants_list(target: types.Message | types.CallbackQuery, page: in
     )
     kb.row(types.InlineKeyboardButton(text="🧬 Фильтр по виду", callback_data=f"{PREFIX}:filter_species:{species_id or 0}"))
     kb.row(
+        types.InlineKeyboardButton(text="🗑 Удалить растения",
+                                   callback_data=f"{PREFIX}:del_menu:{page}:{species_id or 0}"),
+        types.InlineKeyboardButton(text="🗑 Удалить вид", callback_data=f"{PREFIX}:spdel_menu:1"),
+    )
+    kb.row(
         types.InlineKeyboardButton(text="➕ Добавить растение", callback_data=f"{PREFIX}:add"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
     )
-    # входы в режимы удаления (меню с номерами)
-    kb.row(
-        types.InlineKeyboardButton(text="🗑 Удалить растения", callback_data=f"{PREFIX}:del_menu:{page}:{species_id or 0}"),
-        types.InlineKeyboardButton(text="🗑 Удалить вид", callback_data=f"{PREFIX}:spdel_menu:1"),
-    )
+
 
     if isinstance(target, types.CallbackQuery):
         await message.edit_text(text + "\n" + "\n".join(lines), reply_markup=kb.as_markup())
