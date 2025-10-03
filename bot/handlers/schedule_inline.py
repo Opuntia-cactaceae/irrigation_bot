@@ -17,6 +17,12 @@ PREFIX = "sch"
 PAGE_SIZE = 8
 WEEK_EMOJI = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
+ACTION_EMOJI = {
+    "watering": "💧",
+    "fertilizing": "💊",
+    "repotting": "🪴",
+}
+
 
 class SchStates(StatesGroup):
     choosing_plant = State()
@@ -45,6 +51,10 @@ def _job_id(schedule_id: int) -> str:
     return f"sch:{schedule_id}"
 
 
+def _action_emoji(act: ActionType) -> str:
+    return ACTION_EMOJI.get(act.value, "•")
+
+
 def _fmt_schedule(s) -> str:
     # s.type может быть Enum или строка "interval"/"weekly"
     s_type = getattr(s.type, "value", s.type)
@@ -60,6 +70,7 @@ def _fmt_schedule(s) -> str:
         return f"🗓 {days_txt} в {s.local_time.strftime('%H:%M')}"
 
 
+# ------------------------- Мастер создания расписаний ------------------------- #
 async def show_schedule_wizard(target: types.Message | types.CallbackQuery, state: FSMContext, page: int = 1):
     if isinstance(target, types.CallbackQuery):
         message = target.message
@@ -78,7 +89,7 @@ async def show_schedule_wizard(target: types.Message | types.CallbackQuery, stat
         except AttributeError:
             plants = []
 
-    page_items, page, pages, total = _slice(plants, page, PAGE_SIZE)
+    page_items, page, pages, _ = _slice(plants, page, PAGE_SIZE)
 
     text = "🗓️ <b>Мастер расписаний</b>\nШаг 1/5: выберите растение."
     kb = InlineKeyboardBuilder()
@@ -104,63 +115,153 @@ async def show_schedule_wizard(target: types.Message | types.CallbackQuery, stat
         await message.answer(text, reply_markup=kb.as_markup())
 
 
-async def _screen_quick_manage(cb: types.CallbackQuery, state: FSMContext, page: int = 1):
+async def _screen_choose_action(cb: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💧 Полив",     callback_data=f"{PREFIX}:set_action:w")
+    kb.button(text="💊 Удобрения", callback_data=f"{PREFIX}:set_action:f")
+    kb.button(text="🪴 Пересадка", callback_data=f"{PREFIX}:set_action:r")
+    kb.adjust(1)
+    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
+    await cb.message.edit_text("Шаг 2/5: выберите <b>тип действия</b>.", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+async def _screen_choose_kind(cb: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⏱ Каждые N дней", callback_data=f"{PREFIX}:kind_interval")
+    kb.button(text="🗓 По дням недели", callback_data=f"{PREFIX}:kind_weekly")
+    kb.adjust(1)
+    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
+    await cb.message.edit_text(
+        "Шаг 3/5: выберите <b>тип расписания</b>.",
+        reply_markup=kb.as_markup(),
+    )
+    await cb.answer()
+
+
+async def _screen_edit_interval(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    try:
-        plant_id = int(data["plant_id"])
-    except Exception:
-        await cb.answer("Не хватает данных (растение)", show_alert=True)
-        return
+    days = int(data.get("interval_days", 3))
+    hh = int(data.get("hh", 9))
+    mm = int(data.get("mm", 0))
 
-    # тянем все расписания по растению, любых действий
+    text = (
+        "Шаг 4/5: настройка интервала\n"
+        f"• Каждый: <b>{days}</b> дн.\n"
+        f"• Время: <b>{hh:02d}:{mm:02d}</b>"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="− день", callback_data=f"{PREFIX}:ival_inc:-1"),
+        types.InlineKeyboardButton(text="+ день", callback_data=f"{PREFIX}:ival_inc:1"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="Часы −", callback_data=f"{PREFIX}:time_h:-1"),
+        types.InlineKeyboardButton(text="Часы +", callback_data=f"{PREFIX}:time_h:1"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="Минуты −5", callback_data=f"{PREFIX}:time_m:-5"),
+        types.InlineKeyboardButton(text="Минуты +5", callback_data=f"{PREFIX}:time_m:5"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="✅ Сохранить", callback_data=f"{PREFIX}:save"),
+        types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:cancel"),
+    )
+
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+async def _screen_edit_weekly(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    mask = int(data.get("weekly_mask", 0))
+    hh = int(data.get("hh", 9))
+    mm = int(data.get("mm", 0))
+
+    text = (
+        "Шаг 4/5: дни недели и время\n"
+        "• Отмечайте нужные дни ниже.\n"
+        f"• Время: <b>{hh:02d}:{mm:02d}</b>"
+    )
+
+    kb = InlineKeyboardBuilder()
+    row = []
+    for i, lbl in enumerate(WEEK_EMOJI):
+        checked = bool(mask & (1 << i))
+        mark = "✓ " if checked else ""
+        row.append(types.InlineKeyboardButton(text=f"{mark}{lbl}", callback_data=f"{PREFIX}:weekly_toggle:{i}"))
+        if (i % 4 == 3) or i == 6:
+            kb.row(*row); row = []
+    kb.row(
+        types.InlineKeyboardButton(text="Часы −", callback_data=f"{PREFIX}:time_h:-1"),
+        types.InlineKeyboardButton(text="Часы +", callback_data=f"{PREFIX}:time_h:1"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="Минуты −5", callback_data=f"{PREFIX}:time_m:-5"),
+        types.InlineKeyboardButton(text="Минуты +5", callback_data=f"{PREFIX}:time_m:5"),
+    )
+    kb.row(
+        types.InlineKeyboardButton(text="✅ Сохранить", callback_data=f"{PREFIX}:save"),
+        types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:cancel"),
+    )
+
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+# ------------------------- Глобальный список/удаление ------------------------- #
+async def _list_schedules_for_user(user_tg_id: int):
+    """Собираем ВСЕ расписания пользователя по всем растениям, с именем растения."""
     async with new_uow() as uow:
+        me = await uow.users.get_or_create(user_tg_id)
         try:
-            schedules = await uow.schedules.list_by_plant(plant_id)
+            plants = await uow.plants.list_by_user(me.id)
         except AttributeError:
-            # если репозиторий без метода — соберём из связей растения
+            plants = []
+        schedules = []
+        for p in plants:
             try:
-                plant = await uow.plants.get(plant_id)
-                schedules = list(getattr(plant, "schedules", []) or [])
-            except Exception:
-                schedules = []
+                items = await uow.schedules.list_by_plant(p.id)
+            except AttributeError:
+                items = list(getattr(p, "schedules", []) or [])
+            for s in items:
+                setattr(s, "_plant_name", getattr(p, "name", f"#{p.id}"))
+            schedules.extend(items)
+    schedules.sort(key=lambda x: getattr(x, "id", 0), reverse=True)
+    return schedules
 
-    page_items, page, pages, total = _slice(schedules, page, PAGE_SIZE)
 
-    title = "🗑 Быстрое удаление расписаний\n(по выбранному растению)"
+async def _screen_list_all(cb: types.CallbackQuery, page: int = 1):
+    """Нумерованный список всех расписаний. Удаление — по нажатию на номер, с подтверждением."""
+    all_items = await _list_schedules_for_user(cb.from_user.id)
+    page_items, page, pages, total = _slice(all_items, page, PAGE_SIZE)
+
+    title = "🗑 Удаление расписаний\nНажмите номер, чтобы удалить (будет подтверждение)."
     kb = InlineKeyboardBuilder()
 
     if page_items:
-        for s in page_items:
-            # строка с краткой инфой
+        start_num = (page - 1) * PAGE_SIZE + 1
+        for idx, s in enumerate(page_items, start=start_num):
+            plant = getattr(s, "_plant_name", "—")
+            act = getattr(s, "action", None)
+            act = act if isinstance(act, ActionType) else ActionType(getattr(act, "value", act))
+            info = f"{_action_emoji(act)} {plant} · {_fmt_schedule(s)}"
             kb.row(
-                types.InlineKeyboardButton(
-                    text=f"#{s.id} — {_fmt_schedule(s)}",
-                    callback_data=f"{PREFIX}:noop"
-                )
-            )
-            # кнопка удалить
-            kb.row(
-                types.InlineKeyboardButton(
-                    text="🗑 Удалить",
-                    callback_data=f"{PREFIX}:qdel:{s.id}"
-                )
+                types.InlineKeyboardButton(text=f"{idx}", callback_data=f"{PREFIX}:askdel:{s.id}:{page}"),
+                types.InlineKeyboardButton(text=info, callback_data=f"{PREFIX}:noop"),
             )
     else:
         kb.button(text="(расписаний нет)", callback_data=f"{PREFIX}:noop")
         kb.adjust(1)
 
-    # пагинация
     kb.row(
-        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:qmanpg:{max(1, page - 1)}"),
+        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:listpg:{max(1, page - 1)}"),
         types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:qmanpg:{min(pages, page + 1)}"),
+        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:listpg:{min(pages, page + 1)}"),
     )
-
-    if total:
-        kb.row(types.InlineKeyboardButton(text="🗑 Удалить всё", callback_data=f"{PREFIX}:qdel_all"))
-    # назад — в выбор действия (шаг 2)
     kb.row(
-        types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:set_action:w"),  # вернёмся в шаг 2
+        types.InlineKeyboardButton(text="📅 К календарю", callback_data="cal:feed:upc:1:all:0"),
         types.InlineKeyboardButton(text="🏁 Выход", callback_data=f"{PREFIX}:cancel"),
     )
 
@@ -168,6 +269,7 @@ async def _screen_quick_manage(cb: types.CallbackQuery, state: FSMContext, page:
     await cb.answer()
 
 
+# ------------------------------ Обработчик колбэков ------------------------------ #
 @router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
     parts = cb.data.split(":")
@@ -176,27 +278,32 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
     if action == "noop":
         return await cb.answer()
 
+    # Пагинация выбора растения (Шаг 1)
     if action == "page":
         page = int(parts[2])
         return await show_schedule_wizard(cb, state, page=page)
 
-    # ▼ Новые быстрые ветки
-    if action == "qmanage":
+    # Вход из главного меню календаря: показать общий список расписаний
+    if action == "list":
         page = int(parts[2]) if len(parts) > 2 else 1
-        return await _screen_quick_manage(cb, state, page)
+        return await _screen_list_all(cb, page)
 
-    if action == "qmanpg":
+    if action == "listpg":
         page = int(parts[2])
-        return await _screen_quick_manage(cb, state, page)
+        return await _screen_list_all(cb, page)
 
-    if action == "qdel":
-        # однотаповое удаление конкретного расписания
-        try:
-            sch_id = int(parts[2])
-        except Exception:
-            await cb.answer("Не получилось удалить", show_alert=True)
-            return await _screen_quick_manage(cb, state)
+    # Подтверждение удаления из общего списка
+    if action == "askdel":
+        sch_id = int(parts[2]); page = int(parts[3]) if len(parts) > 3 else 1
+        kb = InlineKeyboardBuilder().row(
+            types.InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"{PREFIX}:confirmdel:{sch_id}:{page}"),
+            types.InlineKeyboardButton(text="↩️ Нет", callback_data=f"{PREFIX}:list:{page}"),
+        )
+        await cb.message.edit_text("Удалить это расписание? Это действие необратимо.", reply_markup=kb.as_markup())
+        return await cb.answer()
 
+    if action == "confirmdel":
+        sch_id = int(parts[2]); page = int(parts[3]) if len(parts) > 3 else 1
         async with new_uow() as uow:
             try:
                 await uow.schedules.delete(sch_id)
@@ -205,54 +312,14 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
                     await uow.schedules.update(sch_id, active=False)
                 except AttributeError:
                     pass
-
-        # снимаем APS job
         try:
             aps.remove_job(_job_id(sch_id))
         except Exception:
             pass
+        await cb.answer("Удалено 🗑")
+        return await _screen_list_all(cb, page)
 
-        await cb.answer("Удалено 🗑", show_alert=False)
-        return await _screen_quick_manage(cb, state)
-
-    if action == "qdel_all":
-        # удаляем все расписания по выбранному растению
-        data = await state.get_data()
-        try:
-            plant_id = int(data["plant_id"])
-        except Exception:
-            await cb.answer("Не хватает данных (растение)", show_alert=True)
-            return
-
-        ids = []
-        async with new_uow() as uow:
-            try:
-                items = await uow.schedules.list_by_plant(plant_id)
-            except AttributeError:
-                try:
-                    plant = await uow.plants.get(plant_id)
-                    items = list(getattr(plant, "schedules", []) or [])
-                except Exception:
-                    items = []
-            ids = [s.id for s in items]
-            for sid in ids:
-                try:
-                    await uow.schedules.delete(sid)
-                except AttributeError:
-                    try:
-                        await uow.schedules.update(sid, active=False)
-                    except AttributeError:
-                        pass
-
-        for sid in ids:
-            try:
-                aps.remove_job(_job_id(sid))
-            except Exception:
-                pass
-
-        await cb.answer("Удалены все расписания растения", show_alert=False)
-        return await _screen_quick_manage(cb, state)
-
+    # Мастер создания
     if action == "pick_plant":
         plant_id = int(parts[2])
         async with new_uow() as uow:
@@ -286,36 +353,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         await state.set_state(SchStates.editing_weekly)
         return await _screen_edit_weekly(cb, state)
 
-    # ---------- Раздел управления существующими (удаление) ----------
-    if action == "manage":
-        page = int(parts[2]) if len(parts) > 2 else 1
-        return await _screen_manage_existing(cb, state, page)
-
-    if action == "manpg":
-        page = int(parts[2])
-        return await _screen_manage_existing(cb, state, page)
-
-    if action == "del":
-        sch_id = int(parts[2])
-        # удаляем запись + снимаем APS job
-        async with new_uow() as uow:
-            try:
-                await uow.schedules.delete(sch_id)
-            except AttributeError:
-                # Fallback: если delete нет — молча попробуем пометить неактивным
-                try:
-                    await uow.schedules.update(sch_id, active=False)
-                except AttributeError:
-                    pass
-        try:
-            aps.remove_job(_job_id(sch_id))
-        except Exception:
-            pass
-        await cb.answer("Удалено", show_alert=False)
-        # вернуть на экран списка
-        return await _screen_manage_existing(cb, state)
-    # ---------------------------------------------------------------
-
+    # Редактирование параметров расписания
     if action == "ival_inc":
         delta = int(parts[2])
         data = await state.get_data()
@@ -427,205 +465,3 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
         )
 
     await cb.answer()
-
-
-async def _screen_choose_action(cb: types.CallbackQuery):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="💧 Полив",     callback_data=f"{PREFIX}:set_action:w")
-    kb.button(text="💊 Удобрения", callback_data=f"{PREFIX}:set_action:f")
-    kb.button(text="🪴 Пересадка", callback_data=f"{PREFIX}:set_action:r")
-    kb.button(text="🗑 Быстрое удаление (все)", callback_data=f"{PREFIX}:qmanage:1")
-    kb.adjust(1)
-    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
-    await cb.message.edit_text("Шаг 2/5: выберите <b>тип действия</b>.", reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-async def _screen_choose_kind(cb: types.CallbackQuery):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="⏱ Каждые N дней", callback_data=f"{PREFIX}:kind_interval")
-    kb.button(text="🗓 По дням недели", callback_data=f"{PREFIX}:kind_weekly")
-    kb.button(text="🗑 Удалить существующие", callback_data=f"{PREFIX}:manage:1")
-    kb.adjust(1)
-    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
-    await cb.message.edit_text(
-        "Шаг 3/5: выберите <b>тип расписания</b> или удалите существующие.",
-        reply_markup=kb.as_markup(),
-    )
-    await cb.answer()
-
-
-async def _screen_edit_interval(cb: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    days = int(data.get("interval_days", 3))
-    hh = int(data.get("hh", 9))
-    mm = int(data.get("mm", 0))
-
-    text = (
-        "Шаг 4/5: настройка интервала\n"
-        f"• Каждый: <b>{days}</b> дн.\n"
-        f"• Время: <b>{hh:02d}:{mm:02d}</b>"
-    )
-
-    kb = InlineKeyboardBuilder()
-    kb.row(
-        types.InlineKeyboardButton(text="− день", callback_data=f"{PREFIX}:ival_inc:-1"),
-        types.InlineKeyboardButton(text="+ день", callback_data=f"{PREFIX}:ival_inc:1"),
-    )
-    kb.row(
-        types.InlineKeyboardButton(text="Часы −", callback_data=f"{PREFIX}:time_h:-1"),
-        types.InlineKeyboardButton(text="Часы +", callback_data=f"{PREFIX}:time_h:1"),
-    )
-    kb.row(
-        types.InlineKeyboardButton(text="Минуты −5", callback_data=f"{PREFIX}:time_m:-5"),
-        types.InlineKeyboardButton(text="Минуты +5", callback_data=f"{PREFIX}:time_m:5"),
-    )
-    kb.row(
-        types.InlineKeyboardButton(text="✅ Сохранить", callback_data=f"{PREFIX}:save"),
-        types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:cancel"),
-    )
-
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-async def _screen_edit_weekly(cb: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    mask = int(data.get("weekly_mask", 0))
-    hh = int(data.get("hh", 9))
-    mm = int(data.get("mm", 0))
-
-    text = (
-        "Шаг 4/5: дни недели и время\n"
-        "• Отмечайте нужные дни ниже.\n"
-        f"• Время: <b>{hh:02d}:{mm:02d}</b>"
-    )
-
-    kb = InlineKeyboardBuilder()
-    row = []
-    for i, lbl in enumerate(WEEK_EMOJI):
-        checked = bool(mask & (1 << i))
-        mark = "✓ " if checked else ""
-        row.append(types.InlineKeyboardButton(text=f"{mark}{lbl}", callback_data=f"{PREFIX}:weekly_toggle:{i}"))
-        if (i % 4 == 3) or i == 6:
-            kb.row(*row); row = []
-    kb.row(
-        types.InlineKeyboardButton(text="Часы −", callback_data=f"{PREFIX}:time_h:-1"),
-        types.InlineKeyboardButton(text="Часы +", callback_data=f"{PREFIX}:time_h:1"),
-    )
-    kb.row(
-        types.InlineKeyboardButton(text="Минуты −5", callback_data=f"{PREFIX}:time_m:-5"),
-        types.InlineKeyboardButton(text="Минуты +5", callback_data=f"{PREFIX}:time_m:5"),
-    )
-    kb.row(
-        types.InlineKeyboardButton(text="✅ Сохранить", callback_data=f"{PREFIX}:save"),
-        types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:cancel"),
-    )
-
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-# ---------- Экран управления существующими расписаниями (удаление) ----------
-async def _screen_manage_existing(cb: types.CallbackQuery, state: FSMContext, page: int = 1):
-    data = await state.get_data()
-    try:
-        plant_id = int(data["plant_id"])
-        act = ActionType(data["action"])
-    except Exception:
-        await cb.answer("Не хватает данных", show_alert=True)
-        return
-
-    async with new_uow() as uow:
-        # Список расписаний по растению и действию
-        try:
-            schedules = await uow.schedules.list_by_plant_action(plant_id, act)
-        except AttributeError:
-            # fallback: фильтруем вручную
-            try:
-                all_for_plant = await uow.schedules.list_by_plant(plant_id)
-                schedules = [s for s in all_for_plant if getattr(s, "action", None) == act]
-            except AttributeError:
-                schedules = []
-
-    page_items, page, pages, total = _slice(schedules, page, PAGE_SIZE)
-
-    title = "🗑 Управление расписаниями\nВыберите, что удалить."
-    kb = InlineKeyboardBuilder()
-
-    if page_items:
-        for s in page_items:
-            kb.row(
-                types.InlineKeyboardButton(
-                    text=f"#{s.id} — {_fmt_schedule(s)}",
-                    callback_data=f"{PREFIX}:noop",
-                )
-            )
-            kb.row(
-                types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"{PREFIX}:del:{s.id}"),
-            )
-    else:
-        kb.button(text="(для этого действия расписаний нет)", callback_data=f"{PREFIX}:noop")
-        kb.adjust(1)
-
-    # пагинация
-    kb.row(
-        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:manpg:{max(1, page - 1)}"),
-        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:manpg:{min(pages, page + 1)}"),
-    )
-
-    # дополнительные действия
-    if total:
-        kb.row(types.InlineKeyboardButton(text="🗑 Удалить всё", callback_data=f"{PREFIX}:del_all"))
-    kb.row(
-        types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:set_action:{_action_to_code(act)}"),
-        types.InlineKeyboardButton(text="🏁 Выход", callback_data=f"{PREFIX}:cancel"),
-    )
-
-    await cb.message.edit_text(title, reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-@router.callback_query(F.data == f"{PREFIX}:del_all")
-async def _on_del_all(cb: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    try:
-        plant_id = int(data["plant_id"])
-        act = ActionType(data["action"])
-    except Exception:
-        await cb.answer("Не хватает данных", show_alert=True)
-        return
-
-    # собираем id-шники для снятия джоб
-    ids = []
-    async with new_uow() as uow:
-        try:
-            items = await uow.schedules.list_by_plant_action(plant_id, act)
-        except AttributeError:
-            try:
-                all_for_plant = await uow.schedules.list_by_plant(plant_id)
-                items = [s for s in all_for_plant if getattr(s, "action", None) == act]
-            except AttributeError:
-                items = []
-        ids = [s.id for s in items]
-        # удаляем все
-        for sid in ids:
-            try:
-                await uow.schedules.delete(sid)
-            except AttributeError:
-                # Fallback: если delete нет — помечаем неактивным
-                try:
-                    await uow.schedules.update(sid, active=False)
-                except AttributeError:
-                    pass
-
-    # снимаем джобы
-    for sid in ids:
-        try:
-            aps.remove_job(_job_id(sid))
-        except Exception:
-            pass
-
-    await cb.answer("Удалены все расписания этого типа для растения", show_alert=False)
-    return await _screen_manage_existing(cb, state)
