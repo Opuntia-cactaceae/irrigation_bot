@@ -16,6 +16,7 @@ from sqlalchemy import (
     func,
     Enum,
     UniqueConstraint,
+    Text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
