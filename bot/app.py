@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from bot.config import settings
 from bot.db_repo.base import engine
 from bot.db_repo.models import Base
+from bot.handlers.history_inline import history_router
 
 from bot.handlers.main_menu import main_menu_router
 from bot.handlers.help_inline import help_router
@@ -45,6 +46,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.include_router(main_menu_router)
+    dp.include_router(history_router)
     dp.include_router(help_router)
     dp.include_router(plants_router)
     dp.include_router(calendar_router)
@@ -53,12 +55,11 @@ async def main():
     dp.include_router(delete_router)
 
     start_scheduler()
-    await plan_all_active()  # <<< без bot
+    await plan_all_active()
 
     try:
         await dp.start_polling(bot)
     finally:
-        # аккуратно закрываем ресурсы
         await bot.session.close()
         await engine.dispose()
 

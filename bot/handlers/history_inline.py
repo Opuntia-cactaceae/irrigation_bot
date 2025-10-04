@@ -1,20 +1,18 @@
-# bot/handlers/calendar_inline.py
+# bot/handlers/history_inline.py
 from __future__ import annotations
 
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.fsm.context import FSMContext
-from datetime import timezone, datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from bot.handlers.schedule_inline import show_schedule_wizard
-from bot.db_repo.models import ActionType
 from bot.services.calendar_feed import get_feed, Mode
-from bot.db_repo.unit_of_work import new_uow
+from bot.db_repo.models import ActionType
 
-calendar_router = Router(name="calendar_inline")
+history_router = Router(name="history_inline")
 
-PREFIX = "cal"
+PREFIX = "cal"  # тот же префикс, что и в календаре
+PAGE_SIZE_DAYS = 5
 
 ACT_MAP: dict[str, Optional[ActionType]] = {
     "all": None,
@@ -34,18 +32,15 @@ ACT_TO_CODE: dict[Optional[ActionType], str] = {
     ActionType.REPOTTING: "r",
 }
 
-PAGE_SIZE_DAYS = 5
 
-
-async def show_calendar_root(
+async def show_history_root(
     target: types.Message | types.CallbackQuery,
-    year: int,
-    month: int,
+    *,
     action: Optional[ActionType] = None,
     plant_id: Optional[int] = None,
-    mode: Mode = "upc",
     page: int = 1,
 ):
+    # получаем message и user_id из target
     if isinstance(target, types.CallbackQuery):
         message = target.message
         user_id = target.from_user.id
@@ -57,14 +52,14 @@ async def show_calendar_root(
         user_tg_id=user_id,
         action=action,
         plant_id=plant_id,
-        mode=mode,
+        mode="hist",
         page=page,
         days_per_page=PAGE_SIZE_DAYS,
     )
 
-    header = _render_header(mode, action, plant_id)
+    header = _render_header(action, plant_id)
     body = _render_feed_text(feed_page)
-    kb = _kb_calendar(mode, feed_page.page, feed_page.pages, action, plant_id)
+    kb = _kb_history(page=feed_page.page, pages=feed_page.pages, action=action, plant_id=plant_id)
 
     text = header + "\n" + body
     if isinstance(target, types.CallbackQuery):
@@ -74,80 +69,65 @@ async def show_calendar_root(
         await message.answer(text, reply_markup=kb)
 
 
-def _kb_calendar(
-    mode: Mode,
-    page: int,
-    pages: int,
-    action: Optional[ActionType],
-    plant_id: Optional[int],
-):
+def _kb_history(page: int, pages: int, action: Optional[ActionType], plant_id: Optional[int]):
+    """Клавиатура для истории (mode=hist)."""
     kb = InlineKeyboardBuilder()
 
+    # переключатели по действию
     for text, code in (("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")):
         active = (ACT_TO_CODE.get(action) == code)
         mark = "✓ " if active and code != "all" else ""
         kb.button(
             text=f"{mark}{text}",
-            callback_data=f"{PREFIX}:act:{mode}:{page}:{code}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:act:hist:{page}:{code}:{plant_id or 0}",
         )
     kb.adjust(4)
 
-    upc_active = (mode == "upc")
-    hist_active = (mode == "hist")
+    # переключение между разделами
     kb.row(
         types.InlineKeyboardButton(
-            text=("📌 Ближайшие ✓" if upc_active else "📌 Ближайшие"),
+            text="📌 Ближайшие",
             callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
         types.InlineKeyboardButton(
-            text=("📜 История ✓" if hist_active else "📜 История"),
+            text="📜 История ✓",
             callback_data=f"{PREFIX}:feed:hist:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
     )
 
+    # пагинация
     kb.row(
         types.InlineKeyboardButton(
             text="◀️",
-            callback_data=f"{PREFIX}:page:{mode}:{max(1, page-1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:page:hist:{max(1, page-1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
         types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
             text="▶️",
-            callback_data=f"{PREFIX}:page:{mode}:{min(pages, page+1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:page:hist:{min(pages, page+1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
     )
 
-    kb.row(
-        types.InlineKeyboardButton(
-            text="🗓️ Запланировать",
-            callback_data=f"{PREFIX}:plan:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
-        ),
-        types.InlineKeyboardButton(
-            text="🗑 Удалить расписания",
-            callback_data="sdel:list:1",
-        ),
-    )
+    # нижний ряд навигации
     kb.row(
         types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
     )
-
     return kb.as_markup()
 
 
-def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[int]) -> str:
+def _render_header(action: Optional[ActionType], plant_id: Optional[int]) -> str:
     act_label = {
         None: "Все действия",
         ActionType.WATERING: "Полив",
         ActionType.FERTILIZING: "Удобрения",
         ActionType.REPOTTING: "Пересадка",
     }[action]
-    mode_label = "Ближайшие" if mode == "upc" else "История"
     plant_label = "Все растения" if not plant_id else f"Растение #{plant_id}"
     return (
         f"📅 <b>Календарь</b>\n"
         f"Фильтр: <b>{act_label}</b> · <i>{plant_label}</i>\n"
-        f"Раздел: <b>{mode_label}</b>"
+        f"Раздел: <b>История</b>"
     )
 
 
@@ -169,82 +149,37 @@ def _render_feed_text(feed_page) -> str:
     return "\n".join(lines).lstrip()
 
 
-@calendar_router.callback_query(F.data.startswith(f"{PREFIX}:"))
-async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
+@history_router.callback_query(F.data.startswith(f"{PREFIX}:"))
+async def on_history_callbacks(cb: types.CallbackQuery):
+    """
+    Обрабатываем только ветку с mode='hist':
+      cal:feed:hist:...
+      cal:page:hist:...
+      cal:act:hist:...
+    Остальное игнорируем — оставим calendar_inline.
+    """
     parts = cb.data.split(":")
     cmd = parts[1] if len(parts) > 1 else "noop"
 
-    if cmd == "noop":
-        return await cb.answer()
+    # быстро выходим, если это не история
+    if cmd not in ("feed", "page", "act", "root"):
+        return
+    mode: Mode = (parts[2] if len(parts) > 2 else "upc")
+    if mode != "hist":
+        return
 
     if cmd in ("root", "feed", "page", "act"):
-        mode: Mode = (parts[2] if len(parts) > 2 else "upc")
         page = int(parts[3]) if len(parts) > 3 else 1
         act_code = parts[4] if len(parts) > 4 else "all"
         pid = int(parts[5]) if len(parts) > 5 else 0
-        if mode == "hist":
-            return
 
         action = ACT_MAP.get(act_code, None)
         plant_id = pid or None
 
-        return await show_calendar_root(
+        return await show_history_root(
             cb,
-            year=datetime.now().year,
-            month=datetime.now().month,
             action=action,
             plant_id=plant_id,
-            mode=mode,
-            page=page,
-        )
-
-    if cmd == "plan":
-        return await show_schedule_wizard(cb, state)
-
-    if cmd == "done":
-        try:
-            mode: Mode = parts[2]
-            page = int(parts[3])
-            act_code = parts[4]
-            pid = int(parts[5])
-            schedule_id = int(parts[6])
-        except Exception:
-            return await cb.answer("Не получилось отметить", show_alert=True)
-
-
-        action = ACT_MAP.get(act_code, None)
-        plant_id = pid or None
-
-        async with new_uow() as uow:
-            sch = await uow.schedules.get(schedule_id)
-            if not sch or not getattr(sch, "active", True):
-                await cb.answer("Расписание не найдено или отключено", show_alert=True)
-                return await show_calendar_root(cb, datetime.now().year, datetime.now().month, action=action, plant_id=plant_id, mode=mode, page=page)
-
-            plant = await uow.plants.get(getattr(sch, "plant_id", None))
-            if not plant:
-                await cb.answer("Недоступно", show_alert=True)
-                return
-
-            me = await uow.users.get_or_create(cb.from_user.id)
-            if getattr(plant, "user_id", None) != getattr(me, "id", None):
-                await cb.answer("Недоступно", show_alert=True)
-                return
-
-            await uow.events.create(plant_id=sch.plant_id, action=sch.action, source="manual")
-
-        from bot.scheduler import plan_next_for_schedule
-        await plan_next_for_schedule(schedule_id)
-
-
-        await cb.answer("Отмечено ✅", show_alert=False)
-        return await show_calendar_root(
-            cb,
-            year=datetime.now().year,
-            month=datetime.now().month,
-            action=action,
-            plant_id=plant_id,
-            mode=mode,
             page=page,
         )
 

@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from .action_logs import ActionLogsRepo
 from .base import AsyncSessionLocal
 
 from .users import UsersRepo
@@ -22,6 +24,7 @@ class UnitOfWork:
         self.events = EventsRepo(session)
         self.species = SpeciesRepo(session)
         self.jobs = JobsRepo(session)
+        self.logs = ActionLogsRepo(session)
 
     async def commit(self) -> None:
         await self.session.commit()

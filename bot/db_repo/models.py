@@ -146,3 +146,54 @@ class Event(Base):
 
     plant: Mapped["Plant"] = relationship(back_populates="events")
     schedule: Mapped["Schedule"] = relationship(back_populates="events")
+
+class ActionStatus(enum.Enum):
+    DONE = "done"
+    SKIPPED = "skipped"
+
+class ActionSource(enum.Enum):
+    SCHEDULE = "schedule"   # по напоминанию/расписанию
+    MANUAL = "manual"       # вручную (досрочно, без кнопки напоминания)
+
+class ActionLog(Base):
+    """
+    История действий (полив/удобрение/пересадка) — живёт отдельно от растений и расписаний.
+    """
+    __tablename__ = "action_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    # всегда полезно иметь владельца истории
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),  # если удаляют пользователя — чистим его историю
+        index=True,
+        nullable=False,
+    )
+
+    # мягкие ссылки на сущности, которые могут исчезать
+    plant_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("plants.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    schedule_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("schedules.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+
+    # что сделали
+    action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
+    status: Mapped[ActionStatus] = mapped_column(Enum(ActionStatus), nullable=False)
+    source: Mapped[ActionSource] = mapped_column(Enum(ActionSource), nullable=False, default=ActionSource.SCHEDULE)
+
+    # когда отметили
+    done_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # денормализация — на случай удаления/переименования растения
+    plant_name_at_time: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # произвольная заметка (например, "полил 300 мл", "подсох верхний слой")
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

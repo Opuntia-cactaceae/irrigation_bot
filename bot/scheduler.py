@@ -7,6 +7,8 @@ from datetime import datetime
 import pytz
 
 from aiogram import Bot
+from aiogram.filters.callback_data import CallbackData
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.events import (
     EVENT_JOB_ERROR,
     EVENT_JOB_EXECUTED,
@@ -20,6 +22,10 @@ from bot.config import settings
 from bot.db_repo.models import ActionType, Schedule, ScheduleType, User, Plant
 from bot.services.rules import next_by_interval, next_by_weekly
 from bot.db_repo.unit_of_work import new_uow
+
+class RemindCb(CallbackData, prefix="r"):
+    action: str         # "done" | "skip"
+    schedule_id: int    # ID расписания
 
 # ----------------------------------
 # ЛОГГЕР
@@ -137,13 +143,28 @@ async def send_reminder(schedule_id: int):
                 ActionType.REPOTTING: "Время пересадки",
             }[sch.action]
 
+            # инлайн-клавиатура
+            kb = InlineKeyboardBuilder()
+            kb.button(
+                text="✅ Сделано",
+                callback_data=RemindCb(action="done", schedule_id=schedule_id)
+            )
+            kb.button(
+                text="⏭️ Пропустить",
+                callback_data=RemindCb(action="skip", schedule_id=schedule_id)
+            )
+            kb.adjust(2)
+
             try:
-                await bot.send_message(user.tg_user_id, f"{emoji} {action_text}: {plant.name}")
-                logger.info(
-                    "[SEND OK] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action
+                await bot.send_message(
+                    user.tg_user_id,
+                    f"{emoji} {action_text}: {plant.name}",
+                    reply_markup=kb.as_markup(),
                 )
+                logger.info("[SEND OK] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action)
             except Exception as e:
                 logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
+
 
             # лог события — строго привязка к расписанию
             ev_id = await uow.jobs.log_event(schedule_id)
