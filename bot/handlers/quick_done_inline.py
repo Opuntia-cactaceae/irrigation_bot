@@ -22,7 +22,7 @@ def _as_value(x):
     return getattr(x, "value", x)
 
 def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
-    s_type = _as_value(getattr(sch, "type", None))
+    s_type = getattr(sch, "type", None)
     if s_type == ScheduleType.INTERVAL:
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
     else:
