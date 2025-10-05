@@ -100,18 +100,27 @@ class ActionType(enum.Enum):
     def list(cls) -> list["ActionType"]:
         return list(cls)
 
-    _EMOJI = {
-        "watering": "💧",
-        "fertilizing": "💊",
-        "repotting": "🪴",
-        "custom": "🪴",
-    }
-    _TITLE_RU = {
-        "watering": "Полив",
-        "fertilizing": "Подкормка",
-        "repotting": "Пересадка",
-        "custom": "Действие",
-    }
+    def emoji(self) -> str:
+        if self is ActionType.WATERING:
+            return "💧"
+        if self is ActionType.FERTILIZING:
+            return "💊"
+        if self is ActionType.REPOTTING:
+            return "🪴"
+        if self is ActionType.CUSTOM:
+            return "🪴"
+        return "•"
+
+    def title_ru(self) -> str:
+        if self is ActionType.WATERING:
+            return "Полив"
+        if self is ActionType.FERTILIZING:
+            return "Подкормка"
+        if self is ActionType.REPOTTING:
+            return "Пересадка"
+        if self is ActionType.CUSTOM:
+            return "Действие"
+        return "Действие"
 
     def emoji(self) -> str:
         return self._EMOJI[self.value]
@@ -126,14 +135,12 @@ class ActionType(enum.Enum):
         if isinstance(x, cls):
             return x
         if isinstance(x, str):
-            try:
-                return cls(x.lower())
-            except Exception:
-                pass
-            try:
-                return cls[x.upper()]
-            except Exception:
-                return None
+            x_lower = x.lower()
+            for m in cls:
+                if m.value == x_lower:
+                    return m
+            by_name: dict[str, ActionType] = {m.name: m for m in cls}
+            return by_name.get(x.upper())
         return None
 
 
