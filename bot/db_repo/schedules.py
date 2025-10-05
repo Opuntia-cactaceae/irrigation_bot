@@ -1,20 +1,29 @@
 # bot/db_repo/schedules.py
-from typing import Optional, Sequence, List
+from typing import Optional, Sequence, List, Iterable
 from datetime import time as dtime
 
-from sqlalchemy import select, delete, update, and_
+from sqlalchemy import select, delete, update, and_, literal
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from .models import Schedule, ActionType, ScheduleType
+from .models import (
+    Schedule,
+    ActionType,
+    ScheduleType,
+    Plant,
+    User,
+    ScheduleSubscription,
+)
 
 
 class SchedulesRepo:
     """
     Репозиторий расписаний.
 
-    Новая политика:
+    Политика:
     - НЕ перезаписываем существующие расписания.
     - Создаём новые записи (независимые таймеры).
+    - Поддержка кастом-действий (ActionType.CUSTOM) с полями custom_title/custom_note_template.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -30,7 +39,11 @@ class SchedulesRepo:
         return (await self.session.execute(q)).scalars().all()
 
     async def list_by_plant(self, plant_id: int) -> List[Schedule]:
-        q = select(Schedule).where(Schedule.plant_id == plant_id).order_by(Schedule.id.desc())
+        q = (
+            select(Schedule)
+            .where(Schedule.plant_id == plant_id)
+            .order_by(Schedule.id.desc())
+        )
         return list((await self.session.execute(q)).scalars().all())
 
     async def list_by_plant_action(self, plant_id: int, action: ActionType) -> List[Schedule]:
@@ -53,11 +66,25 @@ class SchedulesRepo:
         interval_days: Optional[int] = None,
         weekly_mask: Optional[int] = None,
         active: bool = True,
+        # кастом-действие:
+        custom_title: Optional[str] = None,
+        custom_note_template: Optional[str] = None,
     ) -> Schedule:
         """
         Создать НОВОЕ расписание.
         Поле `type` — строка: ScheduleType.INTERVAL / ScheduleType.WEEKLY.
+
+        Для action=CUSTOM можно (и желательно) указать custom_title/custom_note_template.
+        Для остальных action — custom_* должны быть None (валидируем мягко).
         """
+        if action == ActionType.CUSTOM:
+            # ok — можно без названия, но лучше иметь
+            pass
+        else:
+            # гасим случайные поля
+            custom_title = None
+            custom_note_template = None
+
         sch = Schedule(
             plant_id=plant_id,
             action=action,
@@ -66,6 +93,8 @@ class SchedulesRepo:
             weekly_mask=weekly_mask,
             local_time=local_time,
             active=active,
+            custom_title=custom_title,
+            custom_note_template=custom_note_template,
         )
         self.session.add(sch)
         await self.session.flush()  # чтобы sch.id появился без коммита
@@ -74,9 +103,17 @@ class SchedulesRepo:
     async def update(self, schedule_id: int, **fields) -> None:
         """
         Обновить произвольные поля расписания.
+        Примечание: если action != CUSTOM — custom_* будут обнулены даже если передать.
         """
         if not fields:
             return
+
+        # Если action меняют на не-CUSTOM — обнулим custom_*
+        new_action: Optional[ActionType] = fields.get("action")
+        if new_action is not None and new_action != ActionType.CUSTOM:
+            fields.setdefault("custom_title", None)
+            fields.setdefault("custom_note_template", None)
+
         await self.session.execute(
             update(Schedule).where(Schedule.id == schedule_id).values(**fields)
         )
@@ -101,9 +138,7 @@ class SchedulesRepo:
 
     async def get_for_plant_action(self, plant_id: int, action: ActionType) -> Optional[Schedule]:
         """
-        Исторически возвращал «единственное» расписание для пары (plant, action).
-        Т.к. теперь расписаний может быть несколько, метод сохраняем для совместимости,
-        но он вернёт ПЕРВУЮ найденную запись (по возрастанию id не гарантируется).
+        Исторический метод: возвращает первую найденную запись.
         Лучше используйте list_by_plant_action().
         """
         q = select(Schedule).where(
@@ -112,11 +147,19 @@ class SchedulesRepo:
         return (await self.session.execute(q)).scalar_one_or_none()
 
     async def upsert_interval(
-        self, plant_id: int, action: ActionType, interval_days: int, local_time: dtime
+        self,
+        plant_id: int,
+        action: ActionType,
+        interval_days: int,
+        local_time: dtime,
+        *,
+        custom_title: Optional[str] = None,
+        custom_note_template: Optional[str] = None,
     ) -> Schedule:
         """
-        СТАРОЕ ПОВЕДЕНИЕ upsert ЗАМЕНЯЛО существующее расписание.
-        ТЕПЕРЬ — ВСЕГДА создаём НОВОЕ расписание (ничего не перетираем).
+        Раньше заменял существующее расписание.
+        Теперь ВСЕГДА создаёт НОВОЕ.
+        Поддерживает CUSTOM через поля custom_*.
         """
         return await self.create(
             plant_id=plant_id,
@@ -126,14 +169,24 @@ class SchedulesRepo:
             weekly_mask=None,
             local_time=local_time,
             active=True,
+            custom_title=custom_title,
+            custom_note_template=custom_note_template,
         )
 
     async def upsert_weekly(
-        self, plant_id: int, action: ActionType, weekly_mask: int, local_time: dtime
+        self,
+        plant_id: int,
+        action: ActionType,
+        weekly_mask: int,
+        local_time: dtime,
+        *,
+        custom_title: Optional[str] = None,
+        custom_note_template: Optional[str] = None,
     ) -> Schedule:
         """
-        СТАРОЕ ПОВЕДЕНИЕ upsert ЗАМЕНЯЛО существующее расписание.
-        ТЕПЕРЬ — ВСЕГДА создаём НОВОЕ расписание (ничего не перетираем).
+        Раньше заменял существующее расписание.
+        Теперь ВСЕГДА создаёт НОВОЕ.
+        Поддерживает CUSTOM через поля custom_*.
         """
         return await self.create(
             plant_id=plant_id,
@@ -143,4 +196,57 @@ class SchedulesRepo:
             weekly_mask=weekly_mask,
             local_time=local_time,
             active=True,
+            custom_title=custom_title,
+            custom_note_template=custom_note_template,
         )
+
+    # ---------- Уведомления (удобные выборки) ----------
+
+    async def get_owner_tg_user_id(self, schedule_id: int) -> Optional[int]:
+        """
+        Вернёт tg_user_id владельца расписания.
+        """
+        # JOIN: schedules -> plants -> users
+        q = (
+            select(User.tg_user_id)
+            .select_from(Schedule)
+            .join(Plant, Plant.id == Schedule.plant_id)
+            .join(User, User.id == Plant.user_id)
+            .where(Schedule.id == schedule_id)
+        )
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def list_subscriber_tg_user_ids(self, schedule_id: int, *, include_muted: bool = False) -> List[int]:
+        """
+        Вернёт tg_user_id всех подписчиков расписания.
+        По умолчанию исключает muted.
+        """
+        q = (
+            select(User.tg_user_id)
+            .select_from(ScheduleSubscription)
+            .join(User, User.id == ScheduleSubscription.subscriber_user_id)
+            .where(ScheduleSubscription.schedule_id == schedule_id)
+        )
+        if not include_muted:
+            q = q.where(ScheduleSubscription.muted.is_(False))
+        return list((await self.session.execute(q)).scalars().all())
+
+    async def list_all_recipient_tg_user_ids(
+        self,
+        schedule_id: int,
+        *,
+        include_owner: bool = True,
+        include_muted_subscribers: bool = False,
+    ) -> List[int]:
+        """
+        Удобный сбор всех получателей: владелец + (не)muted подписчики.
+        Гарантирует уникальность (на всякий).
+        """
+        ids: set[int] = set()
+        if include_owner:
+            owner = await self.get_owner_tg_user_id(schedule_id)
+            if owner is not None:
+                ids.add(owner)
+        subs = await self.list_subscriber_tg_user_ids(schedule_id, include_muted=include_muted_subscribers)
+        ids.update(subs)
+        return list(ids)

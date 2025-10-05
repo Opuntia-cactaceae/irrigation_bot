@@ -90,6 +90,7 @@ class ActionType(enum.Enum):
     WATERING = "watering"
     FERTILIZING = "fertilizing"
     REPOTTING = "repotting"
+    CUSTOM = "custom"
 
     @classmethod
     def values(cls) -> list[str]:
@@ -105,12 +106,14 @@ class Schedule(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     plant_id: Mapped[int] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
-    action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)  # watering | fertilizing | repotting
+    action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
     type: Mapped[str] = mapped_column(String(16))  # interval | weekly
     interval_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weekly_mask: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
     local_time: Mapped[time] = mapped_column(Time, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    custom_title: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    custom_note_template: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
     plant: Mapped["Plant"] = relationship(back_populates="schedules")
 
@@ -153,8 +156,8 @@ class ActionStatus(enum.Enum):
     SKIPPED = "skipped"
 
 class ActionSource(enum.Enum):
-    SCHEDULE = "schedule"   # по напоминанию/расписанию
-    MANUAL = "manual"       # вручную (досрочно, без кнопки напоминания)
+    SCHEDULE = "schedule"
+    MANUAL = "manual"
 
 class ActionLog(Base):
     """
@@ -164,14 +167,13 @@ class ActionLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # всегда полезно иметь владельца истории
+
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),  # если удаляют пользователя — чистим его историю
+        ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
         nullable=False,
     )
 
-    # мягкие ссылки на сущности, которые могут исчезать
     plant_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("plants.id", ondelete="SET NULL"),
         index=True,
@@ -183,18 +185,71 @@ class ActionLog(Base):
         nullable=True,
     )
 
-    # что сделали
     action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
     status: Mapped[ActionStatus] = mapped_column(Enum(ActionStatus), nullable=False)
     source: Mapped[ActionSource] = mapped_column(Enum(ActionSource), nullable=False, default=ActionSource.SCHEDULE)
 
-    # когда отметили
     done_at_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    # денормализация — на случай удаления/переименования растения
     plant_name_at_time: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    # произвольная заметка (например, "полил 300 мл", "подсох верхний слой")
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+
+class ScheduleShare(Base):
+    __tablename__ = "schedule_shares"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    note: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    created_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    allow_complete_by_subscribers: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    schedule: Mapped["Schedule"] = relationship()
+    owner: Mapped["User"] = relationship()
+
+
+class ScheduleSubscription(Base):
+    __tablename__ = "schedule_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    subscriber_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    can_complete: Mapped[bool] = mapped_column(Boolean, default=True)
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    accepted_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "subscriber_user_id", name="uq_schedule_subscriber"),
+    )
+
+    schedule: Mapped["Schedule"] = relationship()
+    subscriber: Mapped["User"] = relationship()

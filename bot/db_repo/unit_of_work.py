@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .action_logs import ActionLogsRepo
 from .base import AsyncSessionLocal
+from .schedule_shares import ScheduleShareRepo
+from .schedule_subscriptions import ScheduleSubscriptionsRepo
 
 from .users import UsersRepo
 from .plants import PlantsRepo
@@ -25,6 +27,8 @@ class UnitOfWork:
         self.species = SpeciesRepo(session)
         self.jobs = JobsRepo(session)
         self.logs = ActionLogsRepo(session)
+        self.logs = ScheduleShareRepo(session)
+        self.logs = ScheduleSubscriptionsRepo(session)
 
     async def commit(self) -> None:
         await self.session.commit()
