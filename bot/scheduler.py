@@ -147,11 +147,11 @@ async def send_reminder(schedule_id: int):
             kb = InlineKeyboardBuilder()
             kb.button(
                 text="✅ Сделано",
-                callback_data=RemindCb(action="done", schedule_id=schedule_id)
+                callback_data=RemindCb(action="done", schedule_id=schedule_id).pack()
             )
             kb.button(
                 text="⏭️ Пропустить",
-                callback_data=RemindCb(action="skip", schedule_id=schedule_id)
+                callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack()
             )
             kb.adjust(2)
 
