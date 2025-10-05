@@ -100,6 +100,42 @@ class ActionType(enum.Enum):
     def list(cls) -> list["ActionType"]:
         return list(cls)
 
+    _EMOJI = {
+        "watering": "💧",
+        "fertilizing": "💊",
+        "repotting": "🪴",
+        "custom": "🪴",
+    }
+    _TITLE_RU = {
+        "watering": "Полив",
+        "fertilizing": "Подкормка",
+        "repotting": "Пересадка",
+        "custom": "Действие",
+    }
+
+    def emoji(self) -> str:
+        return self._EMOJI[self.value]
+
+    def title_ru(self) -> str:
+        return self._TITLE_RU[self.value]
+
+    @classmethod
+    def from_any(cls, x: str | "ActionType" | None) -> "ActionType | None":
+        if x is None:
+            return None
+        if isinstance(x, cls):
+            return x
+        if isinstance(x, str):
+            try:
+                return cls(x.lower())
+            except Exception:
+                pass
+            try:
+                return cls[x.upper()]
+            except Exception:
+                return None
+        return None
+
 
 class Schedule(Base):
     __tablename__ = "schedules"

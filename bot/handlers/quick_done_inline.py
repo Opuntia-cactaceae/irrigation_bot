@@ -15,26 +15,22 @@ from bot.scheduler import plan_next_for_schedule
 router = Router(name="quick_done_inline")
 PREFIX = "qdone"
 
-ACTION_EMOJI = {
-    ActionType.WATERING: "💧",
-    ActionType.FERTILIZING: "💊",
-    ActionType.REPOTTING: "🪴",
-    ActionType.CUSTOM: "🪴",
-}
-
 WEEK_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
+def _as_value(x):
+    return getattr(x, "value", x)
+
 def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
-    if getattr(sch, "type", None) == "interval" or getattr(sch, "type", None).value == "interval":
+    s_type = _as_value(getattr(sch, "type", None))
+    if s_type == "interval":
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
     else:
         return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
 
 
 def _fmt_schedule(s) -> str:
-    """Короткое описание расписания: дни недели или 'каждые N дн' + время."""
-    s_type = getattr(s.type, "value", s.type)
+    s_type = _as_value(getattr(s, "type", None))
     if s_type == "interval":
         return f"каждые {getattr(s, 'interval_days', '?')} дн в {s.local_time.strftime('%H:%M')}"
     else:
@@ -43,6 +39,8 @@ def _fmt_schedule(s) -> str:
         days_txt = ",".join(days) if days else "—"
         return f"{days_txt} в {s.local_time.strftime('%H:%M')}"
 
+def _as_action(x) -> ActionType | None:
+    return ActionType.from_any(x)
 
 async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[Dict[str, Any]]:
     async with new_uow() as uow:
@@ -64,7 +62,11 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
         events = list(getattr(p, "events", []) or [])
         for sch in schedules:
             last = max(
-                (getattr(e, "done_at_utc", None) for e in events if e.action == sch.action),
+                (
+                    getattr(e, "done_at_utc", None)
+                    for e in events
+                    if _as_action(getattr(e, "action", None)) == _as_action(getattr(sch, "action", None))
+                ),
                 default=None,
             )
             run_at_utc = _calc_next_run_utc(sch=sch, user_tz=user_tz, last_event_utc=last, now_utc=now_utc)
@@ -113,7 +115,7 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
     kb = InlineKeyboardBuilder()
 
     for idx, it in enumerate(items, start=1):
-        emoji = ACTION_EMOJI.get(it["action"], "•")
+        emoji = ActionType.from_any(it["action"]).emoji() if ActionType.from_any(it["action"]) else "•"
         dow = WEEK_RU[it["dt_local"].weekday()]
         t_str = it["dt_local"].strftime("%H:%M")
         # Пример строки: " 1. Ср 10:00 💧 Аденум · каждые 7 дн в 10:00"
@@ -171,7 +173,12 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
-            await uow.events.create(plant_id=plant.id, action=sch.action, source="manual")
+            act = _as_action(sch.action)
+            await uow.events.create(
+                plant_id=plant.id,
+                action=act if act is not None else sch.action,
+                source="manual",
+            )
 
         try:
             await plan_next_for_schedule(schedule_id)
