@@ -50,7 +50,7 @@ class JobsRepo:
         # 2) Последнее ручное завершение (или любое DONE) по расписанию
         q_done = select(func.max(ActionLog.done_at_utc)).where(
             ActionLog.schedule_id == schedule_id,
-            ActionLog.status == ActionStatus.DONE,
+            ActionLog.status == ActionStatus.DONE.value,
         )
         res_done = (await self.session.execute(q_done)).scalar_one_or_none()
 
