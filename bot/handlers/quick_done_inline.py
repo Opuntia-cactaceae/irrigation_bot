@@ -115,7 +115,8 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
     kb = InlineKeyboardBuilder()
 
     for idx, it in enumerate(items, start=1):
-        emoji = ActionType.from_any(it["action"]).emoji() if ActionType.from_any(it["action"]) else "•"
+        at = ActionType.from_any(it["action"])
+        emoji = at.emoji() if at else "•"
         dow = WEEK_RU[it["dt_local"].weekday()]
         t_str = it["dt_local"].strftime("%H:%M")
         # Пример строки: " 1. Ср 10:00 💧 Аденум · каждые 7 дн в 10:00"
