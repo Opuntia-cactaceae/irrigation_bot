@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from bot.services.calendar_feed import get_feed, Mode
-from bot.db_repo.models import ActionType
+from bot.db_repo.models import ActionType, ActionStatus
 
 history_router = Router(name="history_inline")
 
@@ -25,6 +25,12 @@ ACT_TO_EMOJI = {
     ActionType.FERTILIZING: "💊",
     ActionType.REPOTTING: "🪴",
 }
+
+STATUS_TO_EMOJI = {
+    ActionStatus.DONE: "✅",
+    ActionStatus.SKIPPED: "⏭️",
+}
+
 ACT_TO_CODE: dict[Optional[ActionType], str] = {
     None: "all",
     ActionType.WATERING: "w",
@@ -140,12 +146,28 @@ def _render_feed_text(feed_page) -> str:
         d = day.date_local
         lines.append(f"\n📅 <b>{d:%d.%m (%a)}</b>")
         for it in day.items:
-            emoji = ACT_TO_EMOJI.get(it.action, "•")
-            if hasattr(it, "dt_local") and it.dt_local:
-                t = it.dt_local.strftime("%H:%M")
+            # действие: в Enum и эмодзи
+            act = ActionType.from_any(getattr(it, "action", None))
+            act_emoji = ACT_TO_EMOJI.get(act, "•")
+
+            # статус: в Enum и эмодзи (поддержка str/Enum), по умолчанию DONE
+            raw_status = getattr(it, "status", ActionStatus.DONE)
+            if isinstance(raw_status, str):
+                try:
+                    status = ActionStatus(raw_status)
+                except Exception:
+                    status = ActionStatus.DONE
             else:
+                status = raw_status or ActionStatus.DONE
+            status_emoji = STATUS_TO_EMOJI.get(status, "✅")
+            if getattr(it, "dt_local", None):
+                t = it.dt_local.strftime("%H:%M")
+            elif getattr(it, "dt_utc", None):
                 t = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
-            lines.append(f"  {t} {emoji} {it.plant_name} (id:{it.plant_id})")
+            else:
+                t = "—:—"
+
+            lines.append(f"  {t} {status_emoji} {act_emoji} {it.plant_name} (id:{it.plant_id})")
     return "\n".join(lines).lstrip()
 
 

@@ -177,14 +177,11 @@ async def send_reminder(schedule_id: int):
     await plan_next_for_schedule(schedule_id)
 
 
-# ----------------------------------
-# ПЛАНИРОВАНИЕ ОДНОГО РАСПИСАНИЯ
-# ----------------------------------
 async def plan_next_for_schedule(schedule_id: int):
+    print("in2")
     async with new_uow() as uow:
         sch = await uow.jobs.get_schedule(schedule_id)
         if not sch or not sch.active:
-            # удалить job, если осталась
             try:
                 scheduler.remove_job(_job_id(schedule_id))
                 logger.info("[JOB REMOVED] schedule_id=%s", schedule_id)
@@ -196,7 +193,6 @@ async def plan_next_for_schedule(schedule_id: int):
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
-        # последняя отметка ИМЕННО по этому расписанию
         last = await uow.jobs.get_last_event_time(schedule_id)
 
         run_at = _calc_next_run_utc(
@@ -231,6 +227,7 @@ async def plan_next_for_schedule(schedule_id: int):
     # пересоздаём job (1:1 с расписанием)
     job_id = _job_id(schedule_id)
     try:
+        print("inDel")
         scheduler.remove_job(job_id)
     except Exception:
         pass

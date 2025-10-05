@@ -119,7 +119,6 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
         emoji = at.emoji() if at else "•"
         dow = WEEK_RU[it["dt_local"].weekday()]
         t_str = it["dt_local"].strftime("%H:%M")
-        # Пример строки: " 1. Ср 10:00 💧 Аденум · каждые 7 дн в 10:00"
         lines.append(f"{idx:>2}. {dow} {t_str} {emoji} {it['plant_name']} · {it['desc']}")
         kb.row(
             types.InlineKeyboardButton(
@@ -182,6 +181,7 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
             )
 
         try:
+            print("in")
             await plan_next_for_schedule(schedule_id)
         except Exception:
             pass
