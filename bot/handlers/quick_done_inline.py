@@ -62,7 +62,6 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
                 continue
 
             for sch in schedules:
-                # ВАЖНО: используем ту же «опорную точку», что и планировщик
                 last = await uow.jobs.get_last_effective_done_utc(sch.id)
 
                 run_at_utc = _calc_next_run_utc(

@@ -82,15 +82,15 @@ class Plant(Base):
 
 # Типы расписаний
 class ScheduleType(enum.Enum):
-    INTERVAL = "interval"
-    WEEKLY = "weekly"
+    INTERVAL = "INTERVAL"
+    WEEKLY = "WEEKLY"
 
 
 class ActionType(enum.Enum):
-    WATERING = "watering"
-    FERTILIZING = "fertilizing"
-    REPOTTING = "repotting"
-    CUSTOM = "custom"
+    WATERING = "WATERING"
+    FERTILIZING = "FERTILIZING"
+    REPOTTING = "REPOTTING"
+    CUSTOM = "CUSTOM"
 
     @classmethod
     def values(cls) -> list[str]:
@@ -193,12 +193,13 @@ class Event(Base):
     schedule: Mapped["Schedule"] = relationship(back_populates="events")
 
 class ActionStatus(enum.Enum):
-    DONE = "done"
-    SKIPPED = "skipped"
+    DONE = "DONE"
+    SKIPPED = "SKIPPED"
+
 
 class ActionSource(enum.Enum):
-    SCHEDULE = "schedule"
-    MANUAL = "manual"
+    SCHEDULE = "SCHEDULE"
+    MANUAL = "MANUAL"
 
 class ActionLog(Base):
     """

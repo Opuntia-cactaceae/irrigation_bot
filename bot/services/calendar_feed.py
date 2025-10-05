@@ -8,7 +8,7 @@ from typing import Optional, Literal, Dict, List
 import pytz
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import User, Plant, Schedule, ActionType
+from bot.db_repo.models import User, Plant, Schedule, ActionType, ScheduleType
 from .rules import next_by_interval, next_by_weekly
 
 Mode = Literal["upc", "hist"]
@@ -123,7 +123,7 @@ async def get_feed(
             for _ in range(200):
                 last_anchor = by_action_last[s.action] if cursor is None else cursor
 
-                if s.type == "interval":
+                if s.type == ScheduleType.INTERVAL.value:
                     nxt = next_by_interval(last_anchor, s.interval_days, s.local_time, getattr(user, "tz", "UTC"), base_now)
                 else:
                     nxt = next_by_weekly(last_anchor, s.weekly_mask, s.local_time, getattr(user, "tz", "UTC"), base_now)
