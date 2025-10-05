@@ -16,142 +16,71 @@ depends_on = None
 
 
 def upgrade():
-    # 1) Добавляем значение 'custom' в существующий тип ENUM actiontype
-    # Если у тебя старый PostgreSQL без IF NOT EXISTS — можно убрать и пережить повторный запуск.
+    # 1) Добавляем значение 'custom' в ENUM actiontype (идемпотентно)
     op.execute("ALTER TYPE actiontype ADD VALUE IF NOT EXISTS 'custom'")
 
-    # 2) Поля кастом-действия в schedules
-    op.add_column(
-        "schedules",
-        sa.Column("custom_title", sa.String(length=64), nullable=True),
-    )
-    op.add_column(
-        "schedules",
-        sa.Column("custom_note_template", sa.String(length=256), nullable=True),
-    )
+    # 2) Кастомные поля в schedules
+    op.add_column("schedules", sa.Column("custom_title", sa.String(length=64), nullable=True))
+    op.add_column("schedules", sa.Column("custom_note_template", sa.String(length=256), nullable=True))
 
-    # 3) Таблица schedule_shares
+    # 3) Таблица schedule_shares (без index=True на колонках!)
     op.create_table(
         "schedule_shares",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column(
-            "owner_user_id",
-            sa.Integer(),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        ),
-        sa.Column(
-            "schedule_id",
-            sa.Integer(),
-            sa.ForeignKey("schedules.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        ),
+        sa.Column("owner_user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("schedule_id", sa.Integer(), sa.ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False),
         sa.Column("code", sa.String(length=32), nullable=False),
         sa.Column("note", sa.String(length=128), nullable=True),
-        sa.Column(
-            "created_at_utc",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
-            nullable=False,
-        ),
+        sa.Column("created_at_utc", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.Column("expires_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_active", sa.Boolean(), server_default=sa.text("TRUE"), nullable=False),
-        sa.Column(
-            "allow_complete_by_subscribers",
-            sa.Boolean(),
-            server_default=sa.text("TRUE"),
-            nullable=False,
-        ),
+        sa.Column("allow_complete_by_subscribers", sa.Boolean(), server_default=sa.text("TRUE"), nullable=False),
     )
-    # Индексы/уникальные ключи для shares
-    op.create_index(
-        "ix_schedule_shares_owner_user_id", "schedule_shares", ["owner_user_id"]
-    )
-    op.create_index(
-        "ix_schedule_shares_schedule_id", "schedule_shares", ["schedule_id"]
-    )
-    op.create_index(
-        "ix_schedule_shares_code", "schedule_shares", ["code"], unique=True
-    )
+    # Индексы — идемпотентно
+    op.execute("CREATE INDEX IF NOT EXISTS ix_schedule_shares_owner_user_id ON schedule_shares (owner_user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_schedule_shares_schedule_id ON schedule_shares (schedule_id)")
+    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_schedule_shares_code ON schedule_shares (code)")
 
     # 4) Таблица schedule_subscriptions
     op.create_table(
         "schedule_subscriptions",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column(
-            "schedule_id",
-            sa.Integer(),
-            sa.ForeignKey("schedules.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        ),
-        sa.Column(
-            "subscriber_user_id",
-            sa.Integer(),
-            sa.ForeignKey("users.id", ondelete="CASCADE"),
-            nullable=False,
-            index=True,
-        ),
+        sa.Column("schedule_id", sa.Integer(), sa.ForeignKey("schedules.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("subscriber_user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column("can_complete", sa.Boolean(), server_default=sa.text("TRUE"), nullable=False),
         sa.Column("muted", sa.Boolean(), server_default=sa.text("FALSE"), nullable=False),
-        sa.Column(
-            "accepted_at_utc",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("NOW()"),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "schedule_id",
-            "subscriber_user_id",
-            name="uq_schedule_subscriber",
-        ),
+        sa.Column("accepted_at_utc", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
+        sa.UniqueConstraint("schedule_id", "subscriber_user_id", name="uq_schedule_subscriber"),
     )
-    op.create_index(
-        "ix_schedule_subscriptions_schedule_id", "schedule_subscriptions", ["schedule_id"]
-    )
-    op.create_index(
-        "ix_schedule_subscriptions_subscriber_user_id",
-        "schedule_subscriptions",
-        ["subscriber_user_id"],
-    )
+    op.execute("CREATE INDEX IF NOT EXISTS ix_schedule_subscriptions_schedule_id ON schedule_subscriptions (schedule_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_schedule_subscriptions_subscriber_user_id ON schedule_subscriptions (subscriber_user_id)")
 
 
 def downgrade():
-    # 1) Удаляем подписки и шаринги
-    op.drop_index("ix_schedule_subscriptions_subscriber_user_id", table_name="schedule_subscriptions")
-    op.drop_index("ix_schedule_subscriptions_schedule_id", table_name="schedule_subscriptions")
+    # Подписки
+    op.execute("DROP INDEX IF EXISTS ix_schedule_subscriptions_subscriber_user_id")
+    op.execute("DROP INDEX IF EXISTS ix_schedule_subscriptions_schedule_id")
     op.drop_table("schedule_subscriptions")
 
-    op.drop_index("ix_schedule_shares_code", table_name="schedule_shares")
-    op.drop_index("ix_schedule_shares_schedule_id", table_name="schedule_shares")
-    op.drop_index("ix_schedule_shares_owner_user_id", table_name="schedule_shares")
+    # Шаринги
+    op.execute("DROP INDEX IF EXISTS ix_schedule_shares_code")
+    op.execute("DROP INDEX IF EXISTS ix_schedule_shares_schedule_id")
+    op.execute("DROP INDEX IF EXISTS ix_schedule_shares_owner_user_id")
     op.drop_table("schedule_shares")
 
-    # 2) Убираем поля из schedules
+    # Поля в schedules
     op.drop_column("schedules", "custom_note_template")
     op.drop_column("schedules", "custom_title")
 
-
-    # Создаём временный тип без 'custom'
+    # Откат ENUM: создаём временный тип без 'custom' и пересобираем ссылки
     tmp_enum = postgresql.ENUM("watering", "fertilizing", "repotting", name="actiontype_tmp")
     tmp_enum.create(op.get_bind(), checkfirst=False)
 
-    # Список таблиц/колонок, использующих actiontype
-    targets = [
-        ("schedules", "action"),
-        ("events", "action"),
-        ("action_logs", "action"),
-    ]
-
-    # Меняем колонки на временный тип
+    targets = [("schedules", "action"), ("events", "action"), ("action_logs", "action")]
     for table, column in targets:
         op.execute(
-            f"ALTER TABLE {table} ALTER COLUMN {column} TYPE actiontype_tmp "
-            f"USING {column}::text::actiontype_tmp"
+            f"ALTER TABLE {table} ALTER COLUMN {column} TYPE actiontype_tmp USING {column}::text::actiontype_tmp"
         )
 
-    # Удаляем старый тип и переименовываем временный в actiontype
     op.execute("DROP TYPE actiontype")
     op.execute("ALTER TYPE actiontype_tmp RENAME TO actiontype")
