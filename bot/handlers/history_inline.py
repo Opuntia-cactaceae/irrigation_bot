@@ -149,7 +149,7 @@ def _render_feed_text(feed_page) -> str:
     return "\n".join(lines).lstrip()
 
 
-@history_router.callback_query(F.data.startswith(f"{PREFIX}:"))
+@history_router.callback_query(F.data.regexp(r"^cal:(feed|page|act|root):hist:"))
 async def on_history_callbacks(cb: types.CallbackQuery):
     """
     Обрабатываем только ветку с mode='hist':

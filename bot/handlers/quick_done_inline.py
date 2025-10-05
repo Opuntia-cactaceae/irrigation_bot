@@ -144,7 +144,7 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
     if action == "noop":
         return await cb.answer()
 
-    if action == "refresh":
+    if action in ("refresh", "root", "open"):
         return await show_quick_done_menu(cb)
 
     if action == "done":
