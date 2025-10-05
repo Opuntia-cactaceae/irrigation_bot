@@ -38,7 +38,11 @@ def _action_from_code(code: str) -> ActionType:
 
 
 def _action_to_code(a: ActionType) -> str:
-    return {"watering": "w", "fertilizing": "f", "repotting": "r"}[a.value]
+    return {
+        ActionType.WATERING: "w",
+        ActionType.FERTILIZING: "f",
+        ActionType.REPOTTING: "r",
+    }[a]
 
 
 def _job_id(schedule_id: int) -> str:
@@ -46,9 +50,14 @@ def _job_id(schedule_id: int) -> str:
 
 
 def _fmt_schedule(s) -> str:
-    # s.type может быть Enum или строка "interval"/"weekly"
-    s_type = getattr(s.type, "value", s.type)
-    if s_type == "interval":
+    s_type = getattr(s, "type", None)
+
+    if isinstance(s_type, ScheduleType):
+        is_interval = (s_type is ScheduleType.INTERVAL)
+    else:
+        is_interval = str(s_type).upper() == "INTERVAL"
+
+    if is_interval:
         return f"⏱ каждые {s.interval_days} дн в {s.local_time.strftime('%H:%M')}"
     else:
         days = []
