@@ -164,6 +164,14 @@ class Schedule(Base):
         cascade="save-update, merge",
     )
 
+class ActionStatus(enum.Enum):
+    DONE = "DONE"
+    SKIPPED = "SKIPPED"
+
+
+class ActionSource(enum.Enum):
+    SCHEDULE = "SCHEDULE"
+    MANUAL = "MANUAL"
 
 class Event(Base):
     __tablename__ = "events"
@@ -184,22 +192,12 @@ class Event(Base):
         server_default=func.now(),
         nullable=False,
     )
-    source: Mapped[str] = mapped_column(
-        String(16),
-        nullable=False,
-    )
+    source: Mapped[ActionSource] = mapped_column(Enum(ActionSource), nullable=False)
 
     plant: Mapped["Plant"] = relationship(back_populates="events")
     schedule: Mapped["Schedule"] = relationship(back_populates="events")
 
-class ActionStatus(enum.Enum):
-    DONE = "DONE"
-    SKIPPED = "SKIPPED"
 
-
-class ActionSource(enum.Enum):
-    SCHEDULE = "SCHEDULE"
-    MANUAL = "MANUAL"
 
 class ActionLog(Base):
     """
