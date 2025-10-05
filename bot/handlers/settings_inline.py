@@ -67,7 +67,7 @@ async def show_settings_menu(target: types.CallbackQuery | types.Message):
 
 
 # ---------- SHARE: список моих расписаний ----------
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_menu:")))
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_menu:"))
 async def on_share_menu(cb: types.CallbackQuery):
     # settings:share_menu:<page>
     try:
@@ -127,7 +127,7 @@ async def on_share_menu(cb: types.CallbackQuery):
     await cb.answer()
 
 
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_make:")))
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_make:"))
 async def on_share_make(cb: types.CallbackQuery):
     # settings:share_make:<schedule_id>:<return_page>
     parts = cb.data.split(":")
@@ -218,7 +218,7 @@ async def on_subscribe_enter_code(m: types.Message, state: FSMContext):
 
 
 # ---------- SUBSCRIPTIONS: список и удаление ----------
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:")))
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:"))
 async def on_subs_list(cb: types.CallbackQuery):
     # settings:subs_list:<page>
     try:
@@ -275,7 +275,7 @@ async def on_subs_list(cb: types.CallbackQuery):
     await cb.answer()
 
 
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_del:")))
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_del:"))
 async def on_subs_delete(cb: types.CallbackQuery):
     # settings:subs_del:<subscription_id>:<return_page>
     parts = cb.data.split(":")
