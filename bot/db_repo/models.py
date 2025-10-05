@@ -122,11 +122,6 @@ class ActionType(enum.Enum):
             return "Действие"
         return "Действие"
 
-    def emoji(self) -> str:
-        return self._EMOJI[self.value]
-
-    def title_ru(self) -> str:
-        return self._TITLE_RU[self.value]
 
     @classmethod
     def from_any(cls, x: str | "ActionType" | None) -> "ActionType | None":
