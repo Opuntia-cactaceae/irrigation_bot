@@ -84,6 +84,7 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
 
 
 async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
+    print("show_quick_done_menu")
     if isinstance(target, types.CallbackQuery):
         message = target.message
         user_id = target.from_user.id
@@ -144,7 +145,7 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
     if action == "noop":
         return await cb.answer()
 
-    if action in ("refresh", "root", "open"):
+    if action == "refresh":
         return await show_quick_done_menu(cb)
 
     if action == "done":

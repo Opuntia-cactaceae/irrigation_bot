@@ -52,6 +52,7 @@ async def on_main_menu_click(cb: types.CallbackQuery):
 
     if data == CB_DONE:
         from .quick_done_inline import show_quick_done_menu
+        print("CB_DONE")
         await show_quick_done_menu(cb)
         return
 

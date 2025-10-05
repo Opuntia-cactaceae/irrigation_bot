@@ -297,7 +297,6 @@ async def _screen_choose_action(cb: types.CallbackQuery):
     kb.button(text="💧 Полив",     callback_data=f"{PREFIX}:set_action:w")
     kb.button(text="💊 Удобрения", callback_data=f"{PREFIX}:set_action:f")
     kb.button(text="🪴 Пересадка", callback_data=f"{PREFIX}:set_action:r")
-    kb.button(text="🗑 Быстрое удаление (все)", callback_data=f"{PREFIX}:qmanage:1")
     kb.adjust(1)
     kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
     await cb.message.edit_text("Шаг 2/5: выберите <b>тип действия</b>.", reply_markup=kb.as_markup())
@@ -308,7 +307,6 @@ async def _screen_choose_kind(cb: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="⏱ Каждые N дней", callback_data=f"{PREFIX}:kind_interval")
     kb.button(text="🗓 По дням недели", callback_data=f"{PREFIX}:kind_weekly")
-    kb.button(text="🗑 Удалить существующие", callback_data=f"{PREFIX}:manage:1")
     kb.adjust(1)
     kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:page:1"))
     await cb.message.edit_text(
