@@ -19,6 +19,7 @@ ACTION_EMOJI = {
     ActionType.WATERING: "💧",
     ActionType.FERTILIZING: "💊",
     ActionType.REPOTTING: "🪴",
+    ActionType.CUSTOM: "🪴",
 }
 
 WEEK_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]

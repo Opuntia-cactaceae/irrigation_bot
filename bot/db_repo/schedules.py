@@ -1,10 +1,9 @@
 # bot/db_repo/schedules.py
-from typing import Optional, Sequence, List, Iterable
+from typing import Optional, Sequence, List
 from datetime import time as dtime
 
-from sqlalchemy import select, delete, update, and_, literal
+from sqlalchemy import select, delete, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from .models import (
     Schedule,
@@ -14,6 +13,23 @@ from .models import (
     User,
     ScheduleSubscription,
 )
+
+
+def _coerce_schedule_type(value) -> ScheduleType:
+    """
+    Мягко приводим вход к ScheduleType:
+    - уже Enum -> вернуть как есть
+    - строка ('interval'/'weekly', регистр не важен) -> Enum
+    """
+    if isinstance(value, ScheduleType):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v == "interval":
+            return ScheduleType.INTERVAL
+        if v == "weekly":
+            return ScheduleType.WEEKLY
+    raise ValueError(f"Unsupported schedule type: {value!r}")
 
 
 class SchedulesRepo:
@@ -61,7 +77,7 @@ class SchedulesRepo:
         *,
         plant_id: int,
         action: ActionType,
-        type: str,
+        type: ScheduleType | str,
         local_time: dtime,
         interval_days: Optional[int] = None,
         weekly_mask: Optional[int] = None,
@@ -72,23 +88,20 @@ class SchedulesRepo:
     ) -> Schedule:
         """
         Создать НОВОЕ расписание.
-        Поле `type` — строка: ScheduleType.INTERVAL / ScheduleType.WEEKLY.
-
+        Поле `type` — Enum ScheduleType (можно передать строку, она будет приведена).
         Для action=CUSTOM можно (и желательно) указать custom_title/custom_note_template.
-        Для остальных action — custom_* должны быть None (валидируем мягко).
+        Для остальных action — custom_* будут обнулены.
         """
-        if action == ActionType.CUSTOM:
-            # ok — можно без названия, но лучше иметь
-            pass
-        else:
-            # гасим случайные поля
+        type_enum = _coerce_schedule_type(type)
+
+        if action != ActionType.CUSTOM:
             custom_title = None
             custom_note_template = None
 
         sch = Schedule(
             plant_id=plant_id,
             action=action,
-            type=type,
+            type=type_enum,
             interval_days=interval_days,
             weekly_mask=weekly_mask,
             local_time=local_time,
@@ -104,9 +117,14 @@ class SchedulesRepo:
         """
         Обновить произвольные поля расписания.
         Примечание: если action != CUSTOM — custom_* будут обнулены даже если передать.
+        Также мягко приводим type (если передан) к ScheduleType.
         """
         if not fields:
             return
+
+        # Приведение type к Enum (если передали строку)
+        if "type" in fields and fields["type"] is not None:
+            fields["type"] = _coerce_schedule_type(fields["type"])
 
         # Если action меняют на не-CUSTOM — обнулим custom_*
         new_action: Optional[ActionType] = fields.get("action")
@@ -164,7 +182,7 @@ class SchedulesRepo:
         return await self.create(
             plant_id=plant_id,
             action=action,
-            type=ScheduleType.INTERVAL,  # "interval"
+            type=ScheduleType.INTERVAL,
             interval_days=interval_days,
             weekly_mask=None,
             local_time=local_time,
@@ -191,7 +209,7 @@ class SchedulesRepo:
         return await self.create(
             plant_id=plant_id,
             action=action,
-            type=ScheduleType.WEEKLY,  # "weekly"
+            type=ScheduleType.WEEKLY,
             interval_days=None,
             weekly_mask=weekly_mask,
             local_time=local_time,

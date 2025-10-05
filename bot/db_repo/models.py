@@ -81,7 +81,7 @@ class Plant(Base):
 
 
 # Типы расписаний
-class ScheduleType:
+class ScheduleType(enum.Enum):
     INTERVAL = "interval"
     WEEKLY = "weekly"
 
@@ -107,7 +107,10 @@ class Schedule(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     plant_id: Mapped[int] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"))
     action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
-    type: Mapped[str] = mapped_column(String(16))  # interval | weekly
+    type: Mapped[ScheduleType] = mapped_column(
+        Enum(ScheduleType, name="scheduletype", native_enum=True, validate_strings=True),
+        nullable=False,
+    )
     interval_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     weekly_mask: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
     local_time: Mapped[time] = mapped_column(Time, nullable=False)
