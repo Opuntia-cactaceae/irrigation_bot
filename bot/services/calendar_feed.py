@@ -123,7 +123,7 @@ async def get_feed(
             for _ in range(200):
                 last_anchor = by_action_last[s.action] if cursor is None else cursor
 
-                if s.type == ScheduleType.INTERVAL.value:
+                if s.type == ScheduleType.INTERVAL:
                     nxt = next_by_interval(last_anchor, s.interval_days, s.local_time, getattr(user, "tz", "UTC"), base_now)
                 else:
                     nxt = next_by_weekly(last_anchor, s.weekly_mask, s.local_time, getattr(user, "tz", "UTC"), base_now)
