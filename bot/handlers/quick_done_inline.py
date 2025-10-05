@@ -46,41 +46,42 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
     async with new_uow() as uow:
         user = await uow.users.get_or_create(user_tg_id)
         user_tz = getattr(user, "tz", "UTC") or "UTC"
+
         try:
             plants = await uow.plants.list_by_user_with_relations(user.id)
         except AttributeError:
             plants = await uow.plants.list_by_user(user.id)
 
-    tz = pytz.timezone(user_tz)
-    now_utc = datetime.now(pytz.UTC)
-    items: List[Dict[str, Any]] = []
+        tz = pytz.timezone(user_tz)
+        now_utc = datetime.now(pytz.UTC)
+        items: List[Dict[str, Any]] = []
 
-    for p in plants:
-        schedules = [s for s in (getattr(p, "schedules", []) or []) if getattr(s, "active", True)]
-        if not schedules:
-            continue
-        events = list(getattr(p, "events", []) or [])
-        for sch in schedules:
-            last = max(
-                (
-                    getattr(e, "done_at_utc", None)
-                    for e in events
-                    if _as_action(getattr(e, "action", None)) == _as_action(getattr(sch, "action", None))
-                ),
-                default=None,
-            )
-            run_at_utc = _calc_next_run_utc(sch=sch, user_tz=user_tz, last_event_utc=last, now_utc=now_utc)
-            run_local = run_at_utc.astimezone(tz)
-            items.append({
-                "schedule_id": sch.id,
-                "dt_utc": run_at_utc,
-                "dt_local": run_local,
-                "plant_id": p.id,
-                "plant_name": p.name,
-                "action": sch.action,
-                "user_tz": user_tz,
-                "desc": _fmt_schedule(sch),
-            })
+        for p in plants:
+            schedules = [s for s in (getattr(p, "schedules", []) or []) if getattr(s, "active", True)]
+            if not schedules:
+                continue
+
+            for sch in schedules:
+                # ВАЖНО: используем ту же «опорную точку», что и планировщик
+                last = await uow.jobs.get_last_effective_done_utc(sch.id)
+
+                run_at_utc = _calc_next_run_utc(
+                    sch=sch,
+                    user_tz=user_tz,
+                    last_event_utc=last,
+                    now_utc=now_utc,
+                )
+                run_local = run_at_utc.astimezone(tz)
+                items.append({
+                    "schedule_id": sch.id,
+                    "dt_utc": run_at_utc,
+                    "dt_local": run_local,
+                    "plant_id": p.id,
+                    "plant_name": p.name,
+                    "action": sch.action,
+                    "user_tz": user_tz,
+                    "desc": _fmt_schedule(sch),
+                })
 
     items.sort(key=lambda x: x["dt_utc"])
     return items[:limit]

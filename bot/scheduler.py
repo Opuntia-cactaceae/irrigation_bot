@@ -267,7 +267,7 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             user_id=sch.plant.user_id,
             status=ActionStatus.DONE,
             source=ActionSource.MANUAL,
-            created_at=done_at_utc,
+            done_at_utc=done_at_utc,
         )
 
         await uow.commit()
