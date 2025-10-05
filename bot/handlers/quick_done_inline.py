@@ -8,7 +8,7 @@ from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import ActionType
+from bot.db_repo.models import ActionType, ScheduleType
 from bot.services.rules import next_by_interval, next_by_weekly
 from bot.scheduler import manual_done_and_reschedule
 
@@ -23,7 +23,7 @@ def _as_value(x):
 
 def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
     s_type = _as_value(getattr(sch, "type", None))
-    if s_type == "interval":
+    if s_type == ScheduleType.INTERVAL:
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
     else:
         return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
@@ -31,7 +31,7 @@ def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime],
 
 def _fmt_schedule(s) -> str:
     s_type = _as_value(getattr(s, "type", None))
-    if s_type == "interval":
+    if s_type == ScheduleType.INTERVAL:
         return f"каждые {getattr(s, 'interval_days', '?')} дн в {s.local_time.strftime('%H:%M')}"
     else:
         mask = int(getattr(s, "weekly_mask", 0) or 0)
