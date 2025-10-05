@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType
 from bot.services.rules import next_by_interval, next_by_weekly
-from bot.scheduler import plan_next_for_schedule
+from bot.scheduler import manual_done_and_reschedule
 
 router = Router(name="quick_done_inline")
 PREFIX = "qdone"
@@ -182,7 +182,7 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
 
         try:
             print("in")
-            await plan_next_for_schedule(schedule_id)
+            await manual_done_and_reschedule(schedule_id)
         except Exception:
             pass
 

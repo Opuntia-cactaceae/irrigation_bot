@@ -18,8 +18,10 @@ from apscheduler.events import (
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+
 from bot.config import settings
 from bot.db_repo.models import ActionType, Schedule, ScheduleType, User, Plant
+from bot.db_repo.models import ActionStatus, ActionSource
 from bot.services.rules import next_by_interval, next_by_weekly
 from bot.db_repo.unit_of_work import new_uow
 
@@ -193,7 +195,7 @@ async def plan_next_for_schedule(schedule_id: int):
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
-        last = await uow.jobs.get_last_event_time(schedule_id)
+        last = await uow.jobs.get_last_effective_done_utc(schedule_id)
 
         run_at = _calc_next_run_utc(
             sch=sch, user_tz=tz, last_event_utc=last, now_utc=now_utc
@@ -245,6 +247,32 @@ async def plan_next_for_schedule(schedule_id: int):
         max_instances=1,
     )
     logger.info('[JOB ADDED] id=%s run_at_utc=%s store="default"', job_id, run_at.isoformat())
+
+async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime | None = None):
+    """
+    Помечает «выполнено сейчас» и пересчитывает расписание.
+    Для interval: начнёт новый цикл от now.
+    Для weekly: пропустит ближайшее, сдвинется на следующую неделю.
+    """
+    if done_at_utc is None:
+        done_at_utc = datetime.now(tz=pytz.UTC)
+
+    async with new_uow() as uow:
+        sch = await uow.schedules.get(schedule_id)
+        if not sch or not getattr(sch, "active", True):
+            return
+
+        await uow.action_logs.create(
+            schedule_id=schedule_id,
+            user_id=sch.plant.user_id,
+            status=ActionStatus.DONE,
+            source=ActionSource.MANUAL,
+            created_at=done_at_utc,
+        )
+
+        await uow.commit()
+
+    await plan_next_for_schedule(schedule_id)
 
 
 # ----------------------------------
