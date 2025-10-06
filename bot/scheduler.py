@@ -179,8 +179,12 @@ async def send_reminder(schedule_id: int):
     await plan_next_for_schedule(schedule_id)
 
 
-async def plan_next_for_schedule(schedule_id: int):
-    print("in2")
+async def plan_next_for_schedule(
+    schedule_id: int,
+    *,
+    last_override_utc: datetime | None = None,
+    run_at_override_utc: datetime | None = None,
+):
     async with new_uow() as uow:
         sch = await uow.jobs.get_schedule(schedule_id)
         if not sch or not sch.active:
@@ -195,41 +199,35 @@ async def plan_next_for_schedule(schedule_id: int):
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
-        last = await uow.jobs.get_last_effective_done_utc(schedule_id)
+        if run_at_override_utc is None:
+            last_db = await uow.jobs.get_last_effective_done_utc(schedule_id)
+            last = max([x for x in (last_db, last_override_utc) if x], default=last_db)
 
-        run_at = _calc_next_run_utc(
-            sch=sch, user_tz=tz, last_event_utc=last, now_utc=now_utc
-        )
+            if _is_interval_type(sch.type):
+                run_at = next_by_interval(last, sch.interval_days, sch.local_time, tz, now_utc)
+            else:
+                run_at = next_by_weekly(last, sch.weekly_mask, sch.local_time, tz, now_utc)
+        else:
+            run_at = run_at_override_utc
 
         try:
             loc = pytz.timezone(tz)
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s last_event_utc=%s run_at_utc=%s run_at_local=%s tz=%s",
-                schedule_id,
-                user.id,
-                sch.plant.id,
-                sch.action,
-                last.isoformat() if last else None,
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s run_at_local=%s tz=%s",
+                schedule_id, user.id, sch.plant.id, sch.action,
                 run_at.isoformat(),
                 run_at.astimezone(loc).strftime("%Y-%m-%d %H:%M:%S"),
                 tz,
             )
         except Exception:
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s last_event_utc=%s run_at_utc=%s tz=%s",
-                schedule_id,
-                user.id,
-                sch.plant.id,
-                sch.action,
-                last.isoformat() if last else None,
-                run_at.isoformat(),
-                tz,
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s tz=%s",
+                schedule_id, user.id, sch.plant.id, sch.action, run_at.isoformat(), tz,
             )
 
-    # пересоздаём job (1:1 с расписанием)
+    # пересоздаём job
     job_id = _job_id(schedule_id)
     try:
-        print("inDel")
         scheduler.remove_job(job_id)
     except Exception:
         pass
@@ -242,7 +240,7 @@ async def plan_next_for_schedule(schedule_id: int):
         args=[schedule_id],
         jobstore="default",
         replace_existing=True,
-        misfire_grace_time=3600,  # 1 час на отставание
+        misfire_grace_time=3600,
         coalesce=True,
         max_instances=1,
     )
@@ -250,11 +248,10 @@ async def plan_next_for_schedule(schedule_id: int):
 
 async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime | None = None):
     """
-    Помечает «выполнено сейчас» и пересчитывает расписание.
-    Для interval: начнёт новый цикл от now.
-    Для weekly: пропустит ближайшее, сдвинется на следующую неделю.
+    Ручное DONE + пересчёт:
+      - interval: следующий от момента done
+      - weekly: если отметили ДО ближайшего слота — пропускаем ближайший (ставим на следующую неделю)
     """
-    print("inMan")
     if done_at_utc is None:
         done_at_utc = datetime.now(tz=pytz.UTC)
 
@@ -264,8 +261,10 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             return
 
         plant = await uow.plants.get(sch.plant_id)
-        user = await uow.users.get(plant.user_id) if plant else None
-        print("inAct")
+        user  = await uow.users.get(plant.user_id) if plant else None
+        tz    = user.tz if user and getattr(user, "tz", None) else "UTC"
+
+        # лог ручного выполнения
         await uow.action_logs.create_manual(
             user=user,
             plant=plant,
@@ -275,7 +274,20 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             done_at_utc=done_at_utc,
         )
 
-    await plan_next_for_schedule(schedule_id)
+    if _is_interval_type(sch.type):
+        run_at = next_by_interval(done_at_utc, sch.interval_days, sch.local_time, tz, done_at_utc)
+    else:
+        ns1 = next_by_weekly(None, sch.weekly_mask, sch.local_time, tz, done_at_utc)
+
+        if done_at_utc < ns1:
+
+            run_at = next_by_weekly(ns1, sch.weekly_mask, sch.local_time, tz, ns1)
+        else:
+
+            run_at = next_by_weekly(done_at_utc, sch.weekly_mask, sch.local_time, tz, done_at_utc)
+
+
+    await plan_next_for_schedule(schedule_id, run_at_override_utc=run_at)
 
 
 # ----------------------------------
