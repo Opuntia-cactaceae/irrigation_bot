@@ -31,7 +31,7 @@ def _coerce_enum(value: Union[str, enum.Enum], enum_cls: type[enum.Enum], field_
 
         # match по value (без регистра)
         for m in enum_cls:
-            if m.value.lower() == s_lower:
+            if str(m.value).lower() == s_lower:
                 return m
 
         # match по name (без регистра)
@@ -53,12 +53,37 @@ class EventsRepo(BaseRepo):
         plant_id: int,
         action: ActionLike,
         source: SourceLike = ActionSource.MANUAL,
+        *,
+        schedule_id: Optional[int] = None,
     ) -> Event:
+        """
+        Создаёт Event. Принимает action/source как Enum или строку.
+        Если передать schedule_id — событие будет привязано к расписанию.
+        """
         action_enum = _coerce_enum(action, ActionType, "action")
         source_enum = _coerce_enum(source, ActionSource, "source")
 
-        ev = Event(plant_id=plant_id, action=action_enum, source=source_enum)
+        ev = Event(
+            plant_id=plant_id,
+            schedule_id=schedule_id,
+            action=action_enum,    # Event.action — Enum(ActionType)
+            source=source_enum,    # Event.source — Enum(ActionSource)
+        )
         return await self.add(ev)
+
+    async def create_from_schedule(
+        self,
+        schedule,
+        *,
+        source: SourceLike = ActionSource.SCHEDULE,
+    ) -> Event:
+        """Удобный хелпер для создания события на основе расписания."""
+        return await self.create(
+            plant_id=schedule.plant_id,
+            action=schedule.action,
+            source=source,
+            schedule_id=schedule.id,
+        )
 
     async def last_for_plant_action(
         self,
@@ -66,7 +91,6 @@ class EventsRepo(BaseRepo):
         action: ActionLike,
     ) -> Optional[Event]:
         action_enum = _coerce_enum(action, ActionType, "action")
-
         q = (
             select(Event)
             .where(and_(Event.plant_id == plant_id, Event.action == action_enum))
@@ -82,7 +106,6 @@ class EventsRepo(BaseRepo):
         limit: int = 50,
     ) -> Sequence[Event]:
         action_enum = _coerce_enum(action, ActionType, "action")
-
         q = (
             select(Event)
             .where(and_(Event.plant_id == plant_id, Event.action == action_enum))

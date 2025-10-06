@@ -8,7 +8,7 @@ from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.db_repo.models import ActionType, ScheduleType
+from bot.db_repo.models import ActionType, ScheduleType, ActionSource
 from bot.services.rules import next_by_interval, next_by_weekly
 from bot.scheduler import manual_done_and_reschedule
 
@@ -173,11 +173,11 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
-            act = _as_action(sch.action)
             await uow.events.create(
                 plant_id=plant.id,
-                action=act if act is not None else sch.action,
-                source="manual",
+                action=sch.action,
+                source=ActionSource.MANUAL,
+                schedule_id=sch.id,
             )
 
         try:

@@ -62,6 +62,7 @@ class ActionLogsRepo(BaseRepo):
         note: str | None = None,
     ) -> ActionLog:
         plant = schedule.plant
+        print("in create_from_schedule")
         return await self.create(
             user_id=plant.user.id,
             plant_id=plant.id,

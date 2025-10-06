@@ -262,9 +262,8 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
         if not sch or not getattr(sch, "active", True):
             return
 
-        await uow.action_logs.create(
-            schedule_id=schedule_id,
-            user_id=sch.plant.user_id,
+        await uow.action_logs.create_from_schedule(
+            schedule_id=sch,
             status=ActionStatus.DONE,
             source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
