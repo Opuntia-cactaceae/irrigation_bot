@@ -264,7 +264,7 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             return
         print("Bef Creat")
         await uow.action_logs.create_from_schedule(
-            schedule_id=sch,
+            schedule=sch,
             status=ActionStatus.DONE,
             source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
