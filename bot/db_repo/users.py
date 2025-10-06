@@ -10,6 +10,9 @@ class UsersRepo(BaseRepo):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
 
+    async def get(self, user_id: int) -> Optional[User]:
+        return await self.session.get(User, user_id)
+
     async def get_by_tg_id(self, tg_user_id: int) -> Optional[User]:
         q = select(User).where(User.tg_user_id == tg_user_id)
         return (await self.session.execute(q)).scalar_one_or_none()
