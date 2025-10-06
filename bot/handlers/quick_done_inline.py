@@ -184,6 +184,7 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
             print("in")
             await manual_done_and_reschedule(schedule_id)
         except Exception:
+            raise
             pass
 
         await cb.answer("Отмечено ✅", show_alert=False)

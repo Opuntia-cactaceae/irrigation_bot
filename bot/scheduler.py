@@ -254,6 +254,7 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
     Для interval: начнёт новый цикл от now.
     Для weekly: пропустит ближайшее, сдвинется на следующую неделю.
     """
+    print("inMan")
     if done_at_utc is None:
         done_at_utc = datetime.now(tz=pytz.UTC)
 
@@ -261,15 +262,13 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
         sch = await uow.schedules.get(schedule_id)
         if not sch or not getattr(sch, "active", True):
             return
-
+        print("Bef Creat")
         await uow.action_logs.create_from_schedule(
             schedule_id=sch,
             status=ActionStatus.DONE,
             source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
         )
-
-        await uow.commit()
 
     await plan_next_for_schedule(schedule_id)
 
