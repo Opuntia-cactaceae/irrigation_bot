@@ -86,6 +86,7 @@ class ActionLogsRepo(BaseRepo):
         done_at_utc: datetime | None = None,
         note: str | None = None,
     ) -> ActionLog:
+        print("inCRCR")
         return await self.create(
             user_id=user.id,
             plant_id=plant.id if plant else None,
