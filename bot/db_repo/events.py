@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import enum
-from typing import Optional, Sequence, Union
+from typing import Optional, Sequence, TypeVar, Union, cast
+
 from sqlalchemy import select, and_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,13 +12,10 @@ from .base import BaseRepo
 ActionLike = Union[str, ActionType]
 SourceLike = Union[str, ActionSource]
 
+E = TypeVar("E", bound=enum.Enum)
 
-def _coerce_enum(value: Union[str, enum.Enum], enum_cls: type[enum.Enum], field_name: str):
-    """
-    Универсальный конвертер для enum-полей.
-    Поддерживает строку или сам enum-член.
-    Сравнивает и по name, и по value, без учёта регистра.
-    """
+
+def _coerce_enum(value: Union[str, E], enum_cls: type[E], field_name: str) -> E:
     if isinstance(value, enum_cls):
         return value
 
@@ -29,19 +27,19 @@ def _coerce_enum(value: Union[str, enum.Enum], enum_cls: type[enum.Enum], field_
         s_lower = s.lower()
         s_upper = s.upper()
 
-        # match по value (без регистра)
         for m in enum_cls:
             if str(m.value).lower() == s_lower:
                 return m
 
-        # match по name (без регистра)
         for m in enum_cls:
             if m.name.upper() == s_upper:
                 return m
 
         raise ValueError(f"Unknown {field_name}: {value!r}")
 
-    raise TypeError(f"Unsupported {field_name} type: {type(value)!r}")
+    raise TypeError(
+        f"Unsupported {field_name} type: {type(value)!r}; expected str or {enum_cls.__name__}"
+    )
 
 
 class EventsRepo(BaseRepo):
@@ -56,18 +54,15 @@ class EventsRepo(BaseRepo):
         *,
         schedule_id: Optional[int] = None,
     ) -> Event:
-        """
-        Создаёт Event. Принимает action/source как Enum или строку.
-        Если передать schedule_id — событие будет привязано к расписанию.
-        """
-        action_enum = _coerce_enum(action, ActionType, "action")
-        source_enum = _coerce_enum(source, ActionSource, "source")
+
+        action_enum: ActionType = _coerce_enum(action, ActionType, "action")
+        source_enum: ActionSource = _coerce_enum(source, ActionSource, "source")
 
         ev = Event(
             plant_id=plant_id,
             schedule_id=schedule_id,
-            action=action_enum,    # Event.action — Enum(ActionType)
-            source=source_enum,    # Event.source — Enum(ActionSource)
+            action=action_enum,
+            source=source_enum,
         )
         return await self.add(ev)
 
@@ -77,10 +72,10 @@ class EventsRepo(BaseRepo):
         *,
         source: SourceLike = ActionSource.SCHEDULE,
     ) -> Event:
-        """Удобный хелпер для создания события на основе расписания."""
+
         return await self.create(
             plant_id=schedule.plant_id,
-            action=schedule.action,
+            action=cast(ActionType, schedule.action),
             source=source,
             schedule_id=schedule.id,
         )
@@ -90,7 +85,7 @@ class EventsRepo(BaseRepo):
         plant_id: int,
         action: ActionLike,
     ) -> Optional[Event]:
-        action_enum = _coerce_enum(action, ActionType, "action")
+        action_enum: ActionType = _coerce_enum(action, ActionType, "action")  # type: ignore[assignment]
         q = (
             select(Event)
             .where(and_(Event.plant_id == plant_id, Event.action == action_enum))
@@ -105,7 +100,7 @@ class EventsRepo(BaseRepo):
         action: ActionLike,
         limit: int = 50,
     ) -> Sequence[Event]:
-        action_enum = _coerce_enum(action, ActionType, "action")
+        action_enum: ActionType = _coerce_enum(action, ActionType, "action")  # type: ignore[assignment]
         q = (
             select(Event)
             .where(and_(Event.plant_id == plant_id, Event.action == action_enum))
