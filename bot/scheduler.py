@@ -262,11 +262,16 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
         sch = await uow.schedules.get(schedule_id)
         if not sch or not getattr(sch, "active", True):
             return
-        print("Bef Creat")
-        await uow.action_logs.create_from_schedule(
+
+        plant = await uow.plants.get(sch.plant_id)
+        user = await uow.users.get(plant.user_id) if plant else None
+
+        await uow.action_logs.create_manual(
+            user=user,
+            plant=plant,
             schedule=sch,
+            action=sch.action,
             status=ActionStatus.DONE,
-            source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
         )
 
