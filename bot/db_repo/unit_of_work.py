@@ -26,9 +26,9 @@ class UnitOfWork:
         self.events = EventsRepo(session)
         self.species = SpeciesRepo(session)
         self.jobs = JobsRepo(session)
-        self.logs = ActionLogsRepo(session)
-        self.logs = ScheduleShareRepo(session)
-        self.logs = ScheduleSubscriptionsRepo(session)
+        self.action_logs = ActionLogsRepo(session)
+        self.shares = ScheduleShareRepo(session)
+        self.subscriptions = ScheduleSubscriptionsRepo(session)
 
     async def commit(self) -> None:
         await self.session.commit()
