@@ -25,12 +25,10 @@ class Base(DeclarativeBase):
     pass
 
 
-# Пользователи
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tz: Mapped[str] = mapped_column(String(64), default="Europe/Amsterdam")
 
     plants: Mapped[list["Plant"]] = relationship(
@@ -43,7 +41,7 @@ class Species(Base):
     __tablename__ = "species"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(64))
 
     __table_args__ = (
@@ -60,7 +58,7 @@ class Plant(Base):
     __tablename__ = "plants"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(64))
 
     species_id: Mapped[Optional[int]] = mapped_column(
@@ -175,11 +173,7 @@ class ActionLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
 
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        index=True,
-        nullable=False,
-    )
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
 
     plant_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("plants.id", ondelete="SET NULL"),
@@ -211,9 +205,7 @@ class ScheduleShare(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    owner_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
 
     schedule_id: Mapped[int] = mapped_column(
         ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
@@ -243,9 +235,7 @@ class ScheduleSubscription(Base):
     schedule_id: Mapped[int] = mapped_column(
         ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    subscriber_user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
+    subscriber_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
 
     can_complete: Mapped[bool] = mapped_column(Boolean, default=True)
     muted: Mapped[bool] = mapped_column(Boolean, default=False)
