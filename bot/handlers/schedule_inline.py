@@ -81,7 +81,7 @@ async def show_schedule_wizard(target: types.Message | types.CallbackQuery, stat
     await state.set_state(SchStates.choosing_plant)
 
     async with new_uow() as uow:
-        user = await uow.users.get_or_create(tg_id)
+        user = await uow.users.get(tg_id)
         try:
             plants = await uow.plants.list_by_user(user.id)
         except AttributeError:
@@ -132,7 +132,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
             if not plant:
                 await cb.answer("Растение не найдено", show_alert=True)
                 return
-            me = await uow.users.get_or_create(cb.from_user.id)
+            me = await uow.users.get(cb.from_user.id)
             if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return
@@ -243,7 +243,7 @@ async def on_schedule_callbacks(cb: types.CallbackQuery, state: FSMContext):
                 await cb.answer("Растение не найдено", show_alert=True)
                 return
 
-            me = await uow.users.get_or_create(cb.from_user.id)
+            me = await uow.users.get(cb.from_user.id)
             if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return

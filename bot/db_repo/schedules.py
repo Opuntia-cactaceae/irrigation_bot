@@ -110,7 +110,7 @@ class SchedulesRepo:
             custom_note_template=custom_note_template,
         )
         self.session.add(sch)
-        await self.session.flush()  # чтобы sch.id появился без коммита
+        await self.session.flush()
         return sch
 
     async def update(self, schedule_id: int, **fields) -> None:
@@ -122,11 +122,11 @@ class SchedulesRepo:
         if not fields:
             return
 
-        # Приведение type к Enum (если передали строку)
+
         if "type" in fields and fields["type"] is not None:
             fields["type"] = _coerce_schedule_type(fields["type"])
 
-        # Если action меняют на не-CUSTOM — обнулим custom_*
+
         new_action: Optional[ActionType] = fields.get("action")
         if new_action is not None and new_action != ActionType.CUSTOM:
             fields.setdefault("custom_title", None)
@@ -152,73 +152,6 @@ class SchedulesRepo:
             )
         )
 
-    # ---------- Совместимость (не рекомендуется к использованию) ----------
-
-    async def get_for_plant_action(self, plant_id: int, action: ActionType) -> Optional[Schedule]:
-        """
-        Исторический метод: возвращает первую найденную запись.
-        Лучше используйте list_by_plant_action().
-        """
-        q = select(Schedule).where(
-            and_(Schedule.plant_id == plant_id, Schedule.action == action)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
-
-    async def upsert_interval(
-        self,
-        plant_id: int,
-        action: ActionType,
-        interval_days: int,
-        local_time: dtime,
-        *,
-        custom_title: Optional[str] = None,
-        custom_note_template: Optional[str] = None,
-    ) -> Schedule:
-        """
-        Раньше заменял существующее расписание.
-        Теперь ВСЕГДА создаёт НОВОЕ.
-        Поддерживает CUSTOM через поля custom_*.
-        """
-        return await self.create(
-            plant_id=plant_id,
-            action=action,
-            type=ScheduleType.INTERVAL,
-            interval_days=interval_days,
-            weekly_mask=None,
-            local_time=local_time,
-            active=True,
-            custom_title=custom_title,
-            custom_note_template=custom_note_template,
-        )
-
-    async def upsert_weekly(
-        self,
-        plant_id: int,
-        action: ActionType,
-        weekly_mask: int,
-        local_time: dtime,
-        *,
-        custom_title: Optional[str] = None,
-        custom_note_template: Optional[str] = None,
-    ) -> Schedule:
-        """
-        Раньше заменял существующее расписание.
-        Теперь ВСЕГДА создаёт НОВОЕ.
-        Поддерживает CUSTOM через поля custom_*.
-        """
-        return await self.create(
-            plant_id=plant_id,
-            action=action,
-            type=ScheduleType.WEEKLY,
-            interval_days=None,
-            weekly_mask=weekly_mask,
-            local_time=local_time,
-            active=True,
-            custom_title=custom_title,
-            custom_note_template=custom_note_template,
-        )
-
-    # ---------- Уведомления (удобные выборки) ----------
 
     async def get_owner_tg_user_id(self, schedule_id: int) -> Optional[int]:
         """

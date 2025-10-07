@@ -28,7 +28,7 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
             await cb.answer("Расписание не найдено или отключено", show_alert=True)
             return
 
-        me = await uow.users.get_or_create(cb.from_user.id)
+        me = await uow.users.get(cb.from_user.id)
         if getattr(sch.plant.user, "id", None) != getattr(me, "id", None):
             await cb.answer("Недоступно", show_alert=True)
             return

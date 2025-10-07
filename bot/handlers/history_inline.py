@@ -8,35 +8,14 @@ from typing import Optional
 
 from bot.services.calendar_feed import get_feed, Mode
 from bot.db_repo.models import ActionType, ActionStatus
+from bot.services.cal_shared import CODE_TO_ACTION as ACT_MAP, ACTION_TO_EMOJI as ACT_TO_EMOJI, ACTION_TO_CODE as ACT_TO_CODE, STATUS_TO_EMOJI
 
 history_router = Router(name="history_inline")
 
 PREFIX = "cal"  # тот же префикс, что и в календаре
 PAGE_SIZE_DAYS = 5
 
-ACT_MAP: dict[str, Optional[ActionType]] = {
-    "all": None,
-    "w": ActionType.WATERING,
-    "f": ActionType.FERTILIZING,
-    "r": ActionType.REPOTTING,
-}
-ACT_TO_EMOJI = {
-    ActionType.WATERING: "💧",
-    ActionType.FERTILIZING: "💊",
-    ActionType.REPOTTING: "🪴",
-}
 
-STATUS_TO_EMOJI = {
-    ActionStatus.DONE: "✅",
-    ActionStatus.SKIPPED: "⏭️",
-}
-
-ACT_TO_CODE: dict[Optional[ActionType], str] = {
-    None: "all",
-    ActionType.WATERING: "w",
-    ActionType.FERTILIZING: "f",
-    ActionType.REPOTTING: "r",
-}
 
 
 async def show_history_root(

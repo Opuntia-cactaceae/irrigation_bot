@@ -12,7 +12,6 @@ from .schedule_subscriptions import ScheduleSubscriptionsRepo
 from .users import UsersRepo
 from .plants import PlantsRepo
 from .schedules import SchedulesRepo
-from .events import EventsRepo
 from .species import SpeciesRepo
 from .jobs import JobsRepo
 
@@ -23,7 +22,6 @@ class UnitOfWork:
         self.users = UsersRepo(session)
         self.plants = PlantsRepo(session)
         self.schedules = SchedulesRepo(session)
-        self.events = EventsRepo(session)
         self.species = SpeciesRepo(session)
         self.jobs = JobsRepo(session)
         self.action_logs = ActionLogsRepo(session)

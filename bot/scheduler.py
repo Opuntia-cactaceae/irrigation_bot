@@ -26,17 +26,12 @@ from bot.services.rules import next_by_interval, next_by_weekly
 from bot.db_repo.unit_of_work import new_uow
 
 class RemindCb(CallbackData, prefix="r"):
-    action: str         # "done" | "skip"
-    schedule_id: int    # ID расписания
+    action: str
+    schedule_id: int
 
-# ----------------------------------
-# ЛОГГЕР
-# ----------------------------------
+
 logger = logging.getLogger(__name__)
 
-# ----------------------------------
-# APSCHEDULER: jobstore (SQLAlchemy)
-# ----------------------------------
 SYNC_DB_URL = (
     os.getenv("DATABASE_URL_SYNC")
     or os.getenv("DATABASE_URL", "postgresql+asyncpg://bot:bot@db:5432/watering").replace(
@@ -44,11 +39,9 @@ SYNC_DB_URL = (
     )
 )
 jobstores = {"default": SQLAlchemyJobStore(url=SYNC_DB_URL, tablename="apscheduler_jobs")}
-scheduler = AsyncIOScheduler(jobstores=jobstores)  # таймзону scheduler не меняем
+scheduler = AsyncIOScheduler(jobstores=jobstores)
 
-# ----------------------------------
-# ВСПОМОГАТЕЛЬНОЕ
-# ----------------------------------
+
 ACTION_EMOJI = {
     ActionType.WATERING: "💧",
     ActionType.FERTILIZING: "💊",
@@ -87,9 +80,6 @@ def _calc_next_run_utc(
         return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
 
 
-# ----------------------------------
-# APSCHEDULER DIAGNOSTICS
-# ----------------------------------
 def _on_job_event(event: JobExecutionEvent):
     try:
         job = scheduler.get_job(event.job_id)
@@ -121,9 +111,6 @@ def _heartbeat():
         logger.exception("[SCHED HEARTBEAT] failed")
 
 
-# ----------------------------------
-# ЗАДАНИЕ: ОТПРАВИТЬ НАПОМИНАНИЕ
-# ----------------------------------
 async def send_reminder(schedule_id: int):
     logger.info("[JOB START] schedule_id=%s", schedule_id)
 
@@ -145,7 +132,7 @@ async def send_reminder(schedule_id: int):
                 ActionType.REPOTTING: "Время пересадки",
             }[sch.action]
 
-            # инлайн-клавиатура
+
             kb = InlineKeyboardBuilder()
             kb.button(
                 text="✅ Сделано",
@@ -168,14 +155,13 @@ async def send_reminder(schedule_id: int):
                 logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
 
 
-            # лог события — строго привязка к расписанию
+
             ev_id = await uow.jobs.log_event(schedule_id)
             logger.debug("[EVENT LOGGED] event_id=%s schedule_id=%s", ev_id, schedule_id)
 
     finally:
         await bot.session.close()
 
-    # перепланировать следующее наступление
     await plan_next_for_schedule(schedule_id)
 
 
@@ -225,7 +211,6 @@ async def plan_next_for_schedule(
                 schedule_id, user.id, sch.plant.id, sch.action, run_at.isoformat(), tz,
             )
 
-    # пересоздаём job
     job_id = _job_id(schedule_id)
     try:
         scheduler.remove_job(job_id)
@@ -247,11 +232,7 @@ async def plan_next_for_schedule(
     logger.info('[JOB ADDED] id=%s run_at_utc=%s store="default"', job_id, run_at.isoformat())
 
 async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime | None = None):
-    """
-    Ручное DONE + пересчёт:
-      - interval: следующий от момента done
-      - weekly: если отметили ДО ближайшего слота — пропускаем ближайший (ставим на следующую неделю)
-    """
+
     if done_at_utc is None:
         done_at_utc = datetime.now(tz=pytz.UTC)
 
@@ -264,7 +245,6 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
         user  = await uow.users.get(plant.user_id) if plant else None
         tz    = user.tz if user and getattr(user, "tz", None) else "UTC"
 
-        # лог ручного выполнения
         await uow.action_logs.create_manual(
             user=user,
             plant=plant,
@@ -290,21 +270,15 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
     await plan_next_for_schedule(schedule_id, run_at_override_utc=run_at)
 
 
-# ----------------------------------
-# ПЛАНИРОВАНИЕ ДЛЯ ВСЕХ АКТИВНЫХ
-# ----------------------------------
+
 async def plan_all_active():
     async with new_uow() as uow:
         schedules = await uow.jobs.get_active_schedules()
         logger.info("[PLAN ALL] active_schedules=%d", len(schedules))
-        # важный момент: планируем по одному, чтобы для каждого был свой независимый job
         for sch in schedules:
             await plan_next_for_schedule(sch.id)
 
 
-# ----------------------------------
-# ЖИЗНЕННЫЙ ЦИКЛ ПЛАНИРОВЩИКА
-# ----------------------------------
 def start_scheduler():
     if not scheduler.running:
         scheduler.add_listener(

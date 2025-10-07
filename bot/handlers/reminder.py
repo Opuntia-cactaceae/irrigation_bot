@@ -1,6 +1,7 @@
 # bot/handlers/reminder.py
 from aiogram import Router
 from aiogram.types import CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionStatus, ActionSource
@@ -8,41 +9,61 @@ from bot.scheduler import RemindCb, plan_next_for_schedule, logger
 
 router = Router()
 
-
 @router.callback_query(RemindCb.filter())
 async def on_reminder_callback(cb: CallbackQuery, callback_data: RemindCb):
-    sch_id = callback_data.schedule_id
+    sch_id = int(callback_data.schedule_id)
     status = ActionStatus.DONE if callback_data.action == "done" else ActionStatus.SKIPPED
 
     try:
-        async with new_uow() as uow:
-            sch = await uow.jobs.get_schedule(sch_id)
-            if not sch or not sch.active:
-                await cb.answer("Расписание неактивно", show_alert=False)
-                if cb.message:
-                    await cb.message.edit_reply_markup(reply_markup=None)
-                return
+        await cb.answer("Отмечаю… ✅" if status == ActionStatus.DONE else "Отмечаю… ⏭️", show_alert=False)
 
-            await uow.logs.create_from_schedule(
-                schedule=sch,
-                status=status,
-                source=ActionSource.SCHEDULE,
-            )
-            await uow.session.commit()
-
-        await cb.answer("Отмечено как выполнено ✅" if status == ActionStatus.DONE else "Отмечено как пропущено ⏭️")
         try:
             if cb.message:
                 await cb.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            logger.exception("[CB EDIT MARKUP ERR] schedule_id=%s", sch_id)
+
+        async with new_uow() as uow:
+            sch = await uow.schedules.get(sch_id)
+            if not sch or not getattr(sch, "active", True):
+                await cb.answer("Расписание неактивно", show_alert=False)
+                return
+
+            plant = await uow.plants.get(sch.plant_id) if getattr(sch, "plant_id", None) else None
+            user = await uow.users.get(plant.user_id) if plant else None
+
+            if cb.from_user and user and getattr(user, "tg_user_id", None):
+                if cb.from_user.id != user.tg_user_id:
+                    await cb.answer("Недоступно", show_alert=True)
+                    return
+
+            await uow.action_logs.create(
+                user_id=user.id if user else None,
+                action=sch.action,
+                status=status,
+                source=ActionSource.SCHEDULE,
+                plant_id=plant.id if plant else None,
+                schedule_id=sch.id,
+                done_at_utc=None,
+                plant_name_at_time=plant.name if plant else None,
+                note=None,
+            )
+
+        try:
+            await cb.answer("Готово ✅" if status == ActionStatus.DONE else "Пропущено ⏭️", show_alert=False)
         except Exception:
             pass
 
-        if status == ActionStatus.DONE:
-            try:
-                await plan_next_for_schedule(sch_id)
-            except Exception:
-                logger.exception("[CB RESCHEDULE ERR] schedule_id=%s", sch_id)
+        try:
+            await plan_next_for_schedule(sch_id)
+        except Exception:
+            logger.exception("[CB RESCHEDULE ERR] schedule_id=%s", sch_id)
 
     except Exception as e:
         logger.exception("[CB ERR] schedule_id=%s: %s", sch_id, e)
-        await cb.answer("Ошибка, попробуйте ещё раз", show_alert=True)
+        try:
+            await cb.answer("Ошибка, попробуйте ещё раз", show_alert=True)
+        except Exception:
+            pass

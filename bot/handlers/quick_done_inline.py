@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType, ScheduleType, ActionSource
 from bot.services.rules import next_by_interval, next_by_weekly
-from bot.scheduler import manual_done_and_reschedule
+from bot.scheduler import manual_done_and_reschedule, _calc_next_run_utc
 
 router = Router(name="quick_done_inline")
 PREFIX = "qdone"
@@ -20,13 +20,6 @@ WEEK_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 def _as_value(x):
     return getattr(x, "value", x)
-
-def _calc_next_run_utc(*, sch, user_tz: str, last_event_utc: Optional[datetime], now_utc: datetime) -> datetime:
-    s_type = getattr(sch, "type", None)
-    if s_type == ScheduleType.INTERVAL:
-        return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
-    else:
-        return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
 
 
 def _fmt_schedule(s) -> str:
@@ -77,7 +70,7 @@ def _as_action(x) -> ActionType | None:
 
 async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[Dict[str, Any]]:
     async with new_uow() as uow:
-        user = await uow.users.get_or_create(user_tg_id)
+        user = await uow.users.get(user_tg_id)
         user_tz = getattr(user, "tz", "UTC") or "UTC"
 
         try:
@@ -165,7 +158,6 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
             dt_local=it["dt_local"],
         )
 
-        # без "·" — просто добавляем хвост, если он есть
         if tail:
             line = f"{idx:>2}. {date_lbl} {t_str} {emoji} {it['plant_name']} {tail}"
         else:
@@ -220,24 +212,16 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
                 await cb.answer("Растение не найдено", show_alert=True)
                 return await show_quick_done_menu(cb)
 
-            me = await uow.users.get_or_create(cb.from_user.id)
+            me = await uow.users.get(cb.from_user.id)
             if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return
-
-            await uow.events.create(
-                plant_id=plant.id,
-                action=sch.action,
-                source=ActionSource.MANUAL,
-                schedule_id=sch.id,
-            )
 
         try:
             print("in")
             await manual_done_and_reschedule(schedule_id)
         except Exception:
             raise
-            pass
 
         await cb.answer("Отмечено ✅", show_alert=False)
         return await show_quick_done_menu(cb)

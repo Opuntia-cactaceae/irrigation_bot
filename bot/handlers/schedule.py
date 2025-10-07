@@ -63,15 +63,6 @@ def _fmt_schedule_row(s) -> str:
 
 @router.message(Command("set_schedule"))
 async def set_schedule(m: types.Message):
-    """
-    Форматы:
-      /set_schedule <plant_id> interval <days> HH:MM
-      /set_schedule <plant_id> weekly   <Mon,Wed,...> HH:MM
-
-    По умолчанию создаём расписание для действия WATERING.
-    ВНИМАНИЕ: теперь НЕ заменяем существующие — можно иметь несколько
-    независимых расписаний для одного растения (и даже одного action).
-    """
     try:
         _, plant_id_str, kind, spec, hm = (m.text or "").split(maxsplit=4)
         h, mi = map(int, hm.split(":"))
@@ -90,14 +81,12 @@ async def set_schedule(m: types.Message):
 
     created_id: int | None = None
 
-    # создаём НОВОЕ расписание (не трогаем старые)
     async with new_uow() as uow:
         plant = await uow.plants.get(plant_id)
         if not plant:
             return await m.answer("Растение не найдено.")
 
-        # Проверим владельца
-        me = await uow.users.get_or_create(m.from_user.id)
+        me = await uow.users.get(m.from_user.id)
         if getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно. Это растение не принадлежит вам.")
 
@@ -131,12 +120,10 @@ async def set_schedule(m: types.Message):
 
         created_id = getattr(created, "id", None)
 
-    # планирование выполняем ПОСЛЕ коммита uow
     if created_id is not None:
         try:
             await plan_next_for_schedule(created_id)
         except Exception:
-            # не критично — расписание сохранено, можно перепланировать позже
             pass
 
     await m.answer("Расписание сохранено ✅")
@@ -169,18 +156,16 @@ async def list_schedules(m: types.Message):
         if not plant:
             return await m.answer("Растение не найдено.")
 
-        me = await uow.users.get_or_create(m.from_user.id)
+        me = await uow.users.get(m.from_user.id)
         if getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно. Это растение не принадлежит вам.")
 
-        # попытка оптимального метода
         try:
             if act_filter:
                 schedules = await uow.schedules.list_by_plant_action(plant_id, act_filter)
             else:
                 schedules = await uow.schedules.list_by_plant(plant_id)
         except AttributeError:
-            # fallback — берём всё и фильтруем
             try:
                 all_s = await uow.schedules.list_by_plant(plant_id)
                 schedules = [s for s in all_s if (act_filter is None or getattr(s, "action", None) == act_filter)]
@@ -198,11 +183,7 @@ async def list_schedules(m: types.Message):
 
 @router.message(Command("delete_schedule"))
 async def delete_schedule(m: types.Message):
-    """
-    Удалить одно расписание и снять соответствующую APS-джобу.
-    Формат:
-      /delete_schedule <schedule_id>
-    """
+
     parts = (m.text or "").split()
     if len(parts) != 2:
         return await m.answer("Использование: /delete_schedule <schedule_id>")
@@ -211,27 +192,23 @@ async def delete_schedule(m: types.Message):
     except Exception:
         return await m.answer("schedule_id должен быть числом")
 
-    # проверим владельца перед удалением
     async with new_uow() as uow:
         sch = await uow.schedules.get(sch_id)
         if not sch:
             return await m.answer("Расписание не найдено.")
         plant = await uow.plants.get(sch.plant_id)
-        me = await uow.users.get_or_create(m.from_user.id)
+        me = await uow.users.get(m.from_user.id)
         if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно.")
 
-        # удаляем
         try:
             await uow.schedules.delete(sch_id)
         except AttributeError:
-            # Fallback: если delete нет — пометим неактивным
             try:
                 await uow.schedules.update(sch_id, active=False)
             except AttributeError:
                 pass
 
-    # снимем APS-job
     try:
         aps.remove_job(_job_id(sch_id))
     except Exception:
@@ -258,14 +235,13 @@ async def delete_schedules_bulk(m: types.Message):
 
     act_filter = _action_from_code_opt(parts[2] if len(parts) > 2 else None)
 
-    # соберём id-шники до удаления — чтобы снять джобы
     ids: list[int] = []
     async with new_uow() as uow:
         plant = await uow.plants.get(plant_id)
         if not plant:
             return await m.answer("Растение не найдено.")
 
-        me = await uow.users.get_or_create(m.from_user.id)
+        me = await uow.users.get(m.from_user.id)
         if getattr(plant, "user_id", None) != getattr(me, "id", None):
             return await m.answer("Недоступно.")
 
@@ -295,7 +271,6 @@ async def delete_schedules_bulk(m: types.Message):
                 except AttributeError:
                     pass
 
-    # снимаем все связанные APS-джобы
     for sid in ids:
         try:
             aps.remove_job(_job_id(sid))

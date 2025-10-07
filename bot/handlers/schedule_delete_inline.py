@@ -50,7 +50,7 @@ async def _collect_all_schedules(user_tg_id: int) -> List[Dict[str, Any]]:
     """Все расписания пользователя, с именем растения и эмодзи действия."""
     result: List[Dict[str, Any]] = []
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(user_tg_id)
+        me = await uow.users.get(user_tg_id)
         try:
             plants = await uow.plants.list_by_user_with_relations(me.id)
         except AttributeError:
@@ -135,13 +135,11 @@ async def show_delete_menu(target: types.Message | types.CallbackQuery, page: in
 
 async def _screen_confirm(cb: types.CallbackQuery, sch_id: int, page: int):
     """Экран подтверждения."""
-    # можно достать ещё раз описание — для надёжности
     desc_line = f"#{sch_id}"
     try:
         async with new_uow() as uow:
             s = await uow.schedules.get(sch_id)
             if s:
-                # ищем имя растения
                 p = await uow.plants.get(getattr(s, "plant_id", None))
                 plant = getattr(p, "name", f"#{getattr(s, 'plant_id', '?')}")
                 emoji = ACTION_EMOJI.get(getattr(s, "action", None), "•")
@@ -176,16 +174,14 @@ async def on_delete_callbacks(cb: types.CallbackQuery):
         return await _screen_confirm(cb, sch_id, page)
 
     if action == "yes":
-        sch_id = int(parts[2]); page = int(parts[3]) if len(parts) > 3 else 1
+        sch_id = int(parts[2]);
+        page = int(parts[3]) if len(parts) > 3 else 1
 
         async with new_uow() as uow:
             try:
                 await uow.schedules.delete(sch_id)
-            except AttributeError:
-                try:
-                    await uow.schedules.update(sch_id, active=False)
-                except AttributeError:
-                    pass
+            except Exception:
+                pass
 
         try:
             aps.remove_job(_job_id(sch_id))

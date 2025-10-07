@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
-from bot.scheduler import scheduler as aps  # для снятия APS-job
+from bot.scheduler import scheduler as aps
 
 plants_router = Router(name="plants_inline")
 
@@ -48,10 +48,6 @@ async def _get_species(user_id: int):
 
 
 def kb_plants_list(page: int, pages: int, species_id: int | None):
-    """
-    Базовая пагинация и действия списка (оставлена на случай переиспользования).
-    В текущей версии список строится прямо в show_plants_list.
-    """
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️", callback_data=f"{PREFIX}:page:{max(1, page - 1)}:{species_id or 0}")
     kb.button(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop")
@@ -122,46 +118,31 @@ def _job_id(schedule_id: int) -> str:
     return f"sch:{schedule_id}"
 
 
-# ---------- Вспомогательные каскадные функции ----------
 async def _cascade_summary(plant_id: int) -> dict:
-    """
-    Возвращает словарь:
-      { 'schedules': [ids...], 'events': [ids...], 'counts': {'schedules': N, 'events': M} }
-    """
-    sch_ids, ev_ids = [], []
+    sch_ids, log_ids = [], []
     async with new_uow() as uow:
-        # расписания
         try:
             sch_list = await uow.schedules.list_by_plant(plant_id)
         except AttributeError:
             sch_list = []
         sch_ids = [getattr(s, "id", None) for s in (sch_list or []) if getattr(s, "id", None) is not None]
 
-        # события
         try:
-            ev_list = await uow.events.list_by_plant(plant_id)
-            ev_ids = [getattr(e, "id", None) for e in (ev_list or []) if getattr(e, "id", None) is not None]
+            logs_list = await uow.action_logs.list_by_plant(plant_id)
+            log_ids = [getattr(a, "id", None) for a in (logs_list or []) if getattr(a, "id", None) is not None]
         except AttributeError:
-            ev_ids = []
+            log_ids = []
 
     return {
         "schedules": sch_ids,
-        "events": ev_ids,
-        "counts": {"schedules": len(sch_ids), "events": len(ev_ids)},
+        "logs": log_ids,
+        "counts": {"schedules": len(sch_ids), "logs": len(log_ids)},
     }
 
 
 async def _cascade_delete_plant(user_tg_id: int, plant_id: int) -> dict:
-    """
-    Удаляет всё связанное с растением:
-      - снимает APS-джобы расписаний
-      - удаляет/деактивирует события и расписания
-      - удаляет/деактивирует само растение
-    Возвращает dict с количеством удалённых сущностей.
-    """
-    removed = {"schedules": 0, "events": 0, "plant": 0}
+    removed = {"schedules": 0, "plant": 0, "logs": 0}
 
-    # Снимем APS-job по id расписаний заранее
     summary = await _cascade_summary(plant_id)
     for sid in summary["schedules"]:
         try:
@@ -170,33 +151,22 @@ async def _cascade_delete_plant(user_tg_id: int, plant_id: int) -> dict:
             pass
 
     async with new_uow() as uow:
-        # Проверка владельца
-        me = await uow.users.get_or_create(user_tg_id)
+        me = await uow.users.get_by_tg_id(user_tg_id)
         plant = await uow.plants.get(plant_id)
         if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
             raise PermissionError("Недоступно")
 
-        # Удаление событий
         try:
-            await uow.events.delete_by_plant(plant_id)
-            removed["events"] = summary["counts"]["events"]
+            logs_list = await uow.action_logs.list_by_plant(plant_id)
         except AttributeError:
+            logs_list = []
+        for a in logs_list or []:
             try:
-                ev_list = await uow.events.list_by_plant(plant_id)
-            except AttributeError:
-                ev_list = []
-            for e in ev_list or []:
-                try:
-                    await uow.events.delete(e.id)
-                    removed["events"] += 1
-                except AttributeError:
-                    try:
-                        await uow.events.update(e.id, active=False)
-                        removed["events"] += 1
-                    except AttributeError:
-                        pass
+                await uow.action_logs.delete(a.id)
+                removed["logs"] += 1
+            except Exception:
+                pass
 
-        # Удаление расписаний
         try:
             await uow.schedules.delete_by_plant(plant_id)
             removed["schedules"] = summary["counts"]["schedules"]
@@ -209,28 +179,18 @@ async def _cascade_delete_plant(user_tg_id: int, plant_id: int) -> dict:
                 try:
                     await uow.schedules.delete(s.id)
                     removed["schedules"] += 1
-                except AttributeError:
-                    try:
-                        await uow.schedules.update(s.id, active=False)
-                        removed["schedules"] += 1
-                    except AttributeError:
-                        pass
+                except Exception:
+                    pass
 
-        # Удаление растения
         try:
             await uow.plants.delete(plant_id)
             removed["plant"] = 1
-        except AttributeError:
-            try:
-                await uow.plants.update(plant_id, active=False)
-                removed["plant"] = 1
-            except AttributeError:
-                removed["plant"] = 0
+        except Exception:
+            removed["plant"] = 0
 
     return removed
 
 
-# ---------- species helpers для удаления вида ----------
 async def _species_usage_count(user_id: int, species_id: int) -> int:
     """Сколько растений этого пользователя привязано к данному виду."""
     async with new_uow() as uow:
@@ -241,56 +201,28 @@ async def _species_usage_count(user_id: int, species_id: int) -> int:
     return sum(1 for p in plants if getattr(p, "species_id", None) == species_id)
 
 
-async def _species_detach_and_delete(user_tg_id: int, species_id: int) -> dict:
+async def _species_delete_if_unused(user_tg_id: int, species_id: int) -> dict:
     """
-    Отвязывает вид от всех растений пользователя и удаляет сам вид.
-    Возвращает {'detached': N, 'deleted': 1|0}.
+    Удаляет вид, только если к нему не привязаны растения пользователя.
+    Возвращает {'deleted': 1|0, 'blocked_by_usage': N}.
     """
-    res = {"detached": 0, "deleted": 0}
+    res = {"deleted": 0, "blocked_by_usage": 0}
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(user_tg_id)
-        # проверка владельца вида
+        me = await uow.users.get_by_tg_id(user_tg_id)
         sp = await uow.species.get(species_id)
         if not sp or getattr(sp, "user_id", None) != getattr(me, "id", None):
             raise PermissionError("Недоступно")
 
-        # отвязываем растения
-        try:
-            await uow.plants.clear_species_by_species(species_id)  # пакетный метод, если есть
-            # посчитать сколько было отвязано сложно без до/после, поэтому ниже fallback присвоит точное число
-            try:
-                plants = await uow.plants.list_by_user(me.id)
-            except AttributeError:
-                plants = []
-            # после clear_species_by_species все должны быть None
-            res["detached"] = sum(1 for p in plants if getattr(p, "species_id", None) == species_id)
-        except AttributeError:
-            # по одному
-            try:
-                plants = await uow.plants.list_by_user(me.id)
-            except AttributeError:
-                plants = []
-            for p in plants:
-                if getattr(p, "species_id", None) == species_id:
-                    try:
-                        await uow.plants.set_species(p.id, None)
-                    except AttributeError:
-                        try:
-                            await uow.plants.update(p.id, species_id=None)
-                        except AttributeError:
-                            pass
-                    res["detached"] += 1
+        use_cnt = await _species_usage_count(me.id, species_id)
+        if use_cnt > 0:
+            res["blocked_by_usage"] = use_cnt
+            return res
 
-        # удаляем сам вид
         try:
             await uow.species.delete(species_id)
             res["deleted"] = 1
-        except AttributeError:
-            try:
-                await uow.species.update(species_id, active=False)
-                res["deleted"] = 1
-            except AttributeError:
-                res["deleted"] = 0
+        except Exception:
+            res["deleted"] = 0
 
     return res
 
@@ -338,7 +270,6 @@ async def show_plants_list(target: types.Message | types.CallbackQuery, page: in
         types.InlineKeyboardButton(text="➕ Добавить растение", callback_data=f"{PREFIX}:add"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
     )
-
 
     if isinstance(target, types.CallbackQuery):
         await message.edit_text(text + "\n" + "\n".join(lines), reply_markup=kb.as_markup())
@@ -411,16 +342,8 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
             return await show_plants_list(cb, page=1, species_id=None)
 
         async with new_uow() as uow:
-            user = await uow.users.get_or_create(cb.from_user.id)
-            try:
-                await uow.plants.create(user_id=user.id, name=plant_name, species_id=species_id)
-            except TypeError:
-                plant = await uow.plants.create(user_id=user.id, name=plant_name)
-                if species_id:
-                    try:
-                        await uow.plants.set_species(plant.id, species_id)
-                    except AttributeError:
-                        pass
+            user = await uow.users.get(cb.from_user.id)
+            await uow.plants.create(user_id=user.id, name=plant_name, species_id=species_id)
 
         await state.clear()
         await cb.answer("Создано ✅", show_alert=False)
@@ -438,9 +361,8 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         page = int(parts[2]) if len(parts) > 2 else 1
         return await show_plants_list(cb, page=page, species_id=None)
 
-    # ===================== РЕЖИМ УДАЛЕНИЯ РАСТЕНИЙ (меню с номерами) =====================
+
     if action == "del_menu":
-        # plants:del_menu:<page>:<species|0>
         try:
             page = int(parts[2]); species_id = int(parts[3]) or None
         except Exception:
@@ -459,7 +381,6 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
             lines.append("(на этой странице нет растений)")
 
         kb = InlineKeyboardBuilder()
-        # кнопки — только номера
         for idx, p in enumerate(page_items, start=1):
             kb.button(text=str(idx), callback_data=f"{PREFIX}:del_pick:{p.id}:{page}:{species_id or 0}")
         if page_items:
@@ -477,7 +398,6 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer()
 
     if action == "del_pick":
-        # plants:del_pick:<plant_id>:<page>:<species|0>
         try:
             plant_id = int(parts[2]); page = int(parts[3]); species_id = int(parts[4]) or None
         except Exception:
@@ -490,7 +410,7 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
             if not plant:
                 await cb.answer("Растение не найдено", show_alert=True)
                 return await show_plants_list(cb, page=page, species_id=species_id)
-            me = await uow.users.get_or_create(cb.from_user.id)
+            me = await uow.users.get(cb.from_user.id)
             if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return
@@ -500,9 +420,9 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         name = getattr(plant, "name", "—")
         text = (
             f"⚠️ <b>Удалить «{name}»?</b>\n\n"
-            "Будут удалены/отключены связанные записи:\n"
+            "Будут удалены связанные записи:\n"
             f"• расписания: <b>{counts['schedules']}</b>\n"
-            f"• события: <b>{counts['events']}</b>\n\n"
+            f"• логи: <b>{counts['logs']}</b>\n\n"
             "Действие необратимо."
         )
         kb = InlineKeyboardBuilder()
@@ -526,21 +446,20 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
             await cb.answer("Недоступно", show_alert=True)
             return await show_plants_list(cb, page=page, species_id=species_id)
         except Exception:
-            res = {"plant": 0, "schedules": 0, "events": 0}
+            res = {"plant": 0, "schedules": 0, "logs": 0}
 
         await cb.answer(
-            f"Удалено: растения {res.get('plant',0)}, расписаний {res.get('schedules',0)}, событий {res.get('events',0)} ✅",
+            f"Удалено: растение {res.get('plant',0)}, расписаний {res.get('schedules',0)}, логов {res.get('logs',0)} ✅",
             show_alert=False
         )
-        # возвращаемся в меню удаления на той же странице/фильтре
+
         return await on_plants_callbacks(
             types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"{PREFIX}:del_menu:{page}:{species_id or 0}"),
             state
         )
 
-    # ===================== РЕЖИМ УДАЛЕНИЯ ВИДОВ (меню с номерами) =====================
+
     if action == "spdel_menu":
-        # plants:spdel_menu:<page>
         try:
             page = int(parts[2]) if len(parts) > 2 else 1
         except Exception:
@@ -573,7 +492,6 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer()
 
     if action == "spdel_pick":
-        # plants:spdel_pick:<species_id>:<page>
         try:
             species_id = int(parts[2]); page = int(parts[3])
         except Exception:
@@ -583,7 +501,6 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
         user = await _get_user(cb.from_user.id)
         use_cnt = await _species_usage_count(user.id, species_id)
 
-        # подтянем имя вида и права
         async with new_uow() as uow:
             sp = await uow.species.get(species_id)
             if not sp:
@@ -596,10 +513,20 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
+        if use_cnt > 0:
+            text = (
+                f"⚠️ Нельзя удалить вид «{getattr(sp, 'name', '—')}».\n\n"
+                f"К нему привязано растений: <b>{use_cnt}</b>.\n"
+                "Сначала удалите/измените эти растения."
+            )
+            kb = InlineKeyboardBuilder()
+            kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:spdel_menu:{page}"))
+            await cb.message.edit_text(text, reply_markup=kb.as_markup())
+            return await cb.answer()
+
         text = (
             f"⚠️ <b>Удалить вид «{getattr(sp, 'name', '—')}»?</b>\n\n"
-            f"Будут отвязаны растения: <b>{use_cnt}</b>\n"
-            "Затем вид будет удалён. Действие необратимо."
+            "Привязанных растений нет. Вид будет удалён."
         )
         kb = InlineKeyboardBuilder()
         kb.row(
@@ -617,7 +544,7 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
             return
 
         try:
-            res = await _species_detach_and_delete(cb.from_user.id, species_id)
+            res = await _species_delete_if_unused(cb.from_user.id, species_id)
         except PermissionError:
             await cb.answer("Недоступно", show_alert=True)
             return await on_plants_callbacks(
@@ -625,9 +552,13 @@ async def on_plants_callbacks(cb: types.CallbackQuery, state: FSMContext):
                 state
             )
         except Exception:
-            res = {"detached": 0, "deleted": 0}
+            res = {"deleted": 0, "blocked_by_usage": 0}
 
-        await cb.answer(f"Отвязано растений: {res.get('detached',0)}; Вид удалён: {bool(res.get('deleted',0))} ✅", show_alert=False)
+        if res.get("deleted"):
+            await cb.answer("Вид удалён ✅", show_alert=False)
+        else:
+            await cb.answer("Не удалось удалить вид", show_alert=True)
+
         return await on_plants_callbacks(
             types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"{PREFIX}:spdel_menu:{page}"),
             state
@@ -660,16 +591,11 @@ async def input_species_text(m: types.Message, state: FSMContext):
         return await m.answer("Что-то пошло не так. Начните сначала через «Растения».")
 
     async with new_uow() as uow:
-        user = await uow.users.get_or_create(m.from_user.id)
-        sp = await uow.species.get_or_create(user_id=user.id, name=species_name)
-        try:
-            await uow.plants.create(user_id=user.id, name=plant_name, species_id=getattr(sp, "id", None))
-        except TypeError:
-            plant = await uow.plants.create(user_id=user.id, name=plant_name)
-            try:
-                await uow.plants.set_species(plant.id, getattr(sp, "id", None))
-            except AttributeError:
-                pass
+        user = await uow.users.get(m.from_user.id)
+        sp = await uow.species.get_by_name(user_id=user.id, name=species_name)
+        if not sp:
+            sp = await uow.species.create(user_id=user.id, name=species_name)
+        await uow.plants.create(user_id=user.id, name=plant_name, species_id=getattr(sp, "id", None))
 
     await state.clear()
     await m.answer(f"Создано: <b>{plant_name}</b> ({species_name}) ✅")

@@ -1,6 +1,7 @@
 # bot/db_repo/schedule_subscriptions.py
 from __future__ import annotations
 from typing import Optional, List, Sequence
+from datetime import datetime, timezone
 
 from sqlalchemy import select, update, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,14 +17,8 @@ from .models import (
 
 
 class ScheduleSubscriptionsRepo:
-    """
-    Репозиторий подписок на расписания.
-    """
-
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-
-    # ---------- READ ----------
 
     async def get(self, subscription_id: int) -> Optional[ScheduleSubscription]:
         return await self.session.get(ScheduleSubscription, subscription_id)
@@ -54,9 +49,6 @@ class ScheduleSubscriptionsRepo:
         return (await self.session.execute(q)).scalars().all()
 
     async def list_subscriber_tg_user_ids(self, schedule_id: int, *, include_muted: bool = False) -> List[int]:
-        """
-        Вернёт tg_user_id подписчиков (владельца НЕ включает).
-        """
         q = (
             select(User.tg_user_id)
             .select_from(ScheduleSubscription)
@@ -67,8 +59,6 @@ class ScheduleSubscriptionsRepo:
             q = q.where(ScheduleSubscription.muted.is_(False))
         return list((await self.session.execute(q)).scalars().all())
 
-    # ---------- WRITE ----------
-
     async def create_direct(
         self,
         *,
@@ -77,10 +67,6 @@ class ScheduleSubscriptionsRepo:
         can_complete: bool = True,
         muted: bool = False,
     ) -> ScheduleSubscription:
-        """
-        Прямая подписка без кода (например, из админки).
-        Уникальность по (schedule_id, subscriber_user_id) обеспечивает БД.
-        """
         sub = ScheduleSubscription(
             schedule_id=schedule_id,
             subscriber_user_id=subscriber_user_id,
@@ -92,32 +78,21 @@ class ScheduleSubscriptionsRepo:
         return sub
 
     async def subscribe_with_code(self, *, subscriber_user_id: int, code: str) -> ScheduleSubscription:
-        """
-        Подписка по коду:
-        - код должен существовать, быть активным, не просроченным
-        - нельзя подписывать владельца на себя
-        - can_complete берём из share.allow_complete_by_subscribers
-        - сохраняем уникальность пары (schedule_id, subscriber_user_id)
-        """
-        # 1) Находим код
         share_q = select(ScheduleShare).where(ScheduleShare.code == code)
         share = (await self.session.execute(share_q)).scalar_one_or_none()
         if share is None:
             raise ValueError("Код не найден")
 
-        # 2) Проверяем активность и срок
         if not share.is_active:
             raise ValueError("Код деактивирован владельцем")
         if share.expires_at_utc is not None:
-            # сравниваем без жёсткой привязки к tz — тип в модели TZ-aware
-            if share.expires_at_utc <= share.expires_at_utc.__class__.now(share.expires_at_utc.tzinfo):
+            now_utc = datetime.now(timezone.utc)
+            if share.expires_at_utc <= now_utc:
                 raise ValueError("Срок действия кода истёк")
 
-        # 3) Запрещаем самоподписку владельца
         if share.owner_user_id == subscriber_user_id:
             raise ValueError("Нельзя подписаться на собственное расписание")
 
-        # 4) Создаём подписку (или ловим уникальность)
         sub = ScheduleSubscription(
             schedule_id=share.schedule_id,
             subscriber_user_id=subscriber_user_id,
@@ -130,7 +105,6 @@ class ScheduleSubscriptionsRepo:
             return sub
         except IntegrityError:
             await self.session.rollback()
-            # уже подписан — можно вернуть текущую или бросить
             existing = await self.get_for_user_and_schedule(subscriber_user_id, share.schedule_id)
             if existing:
                 return existing
@@ -180,16 +154,7 @@ class ScheduleSubscriptionsRepo:
             delete(ScheduleSubscription).where(ScheduleSubscription.schedule_id == schedule_id)
         )
 
-    # ---------- Проверки прав ----------
-
     async def can_user_complete(self, *, schedule_id: int, caller_user_id: int) -> bool:
-        """
-        Разрешено ли пользователю отмечать done/skip для расписания:
-        - если он владелец (через join Schedule->Plant->User) — да
-        - если он подписчик c can_complete=True — да
-        - иначе — нет
-        """
-        # 1) Проверяем владельца
         owner_q = (
             select(Plant.user_id)
             .select_from(Schedule)
@@ -200,7 +165,6 @@ class ScheduleSubscriptionsRepo:
         if owner_id is not None and owner_id == caller_user_id:
             return True
 
-        # 2) Проверяем подписку
         sub_q = select(ScheduleSubscription.id).where(
             and_(
                 ScheduleSubscription.schedule_id == schedule_id,

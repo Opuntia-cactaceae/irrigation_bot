@@ -11,28 +11,11 @@ from bot.handlers.schedule_inline import show_schedule_wizard
 from bot.db_repo.models import ActionType
 from bot.services.calendar_feed import get_feed, Mode
 from bot.db_repo.unit_of_work import new_uow
+from bot.services.cal_shared import CODE_TO_ACTION as ACT_MAP, ACTION_TO_EMOJI as ACT_TO_EMOJI, ACTION_TO_CODE as ACT_TO_CODE
 
 calendar_router = Router(name="calendar_inline")
 
 PREFIX = "cal"
-
-ACT_MAP: dict[str, Optional[ActionType]] = {
-    "all": None,
-    "w": ActionType.WATERING,
-    "f": ActionType.FERTILIZING,
-    "r": ActionType.REPOTTING,
-}
-ACT_TO_EMOJI = {
-    ActionType.WATERING: "💧",
-    ActionType.FERTILIZING: "💊",
-    ActionType.REPOTTING: "🪴",
-}
-ACT_TO_CODE: dict[Optional[ActionType], str] = {
-    None: "all",
-    ActionType.WATERING: "w",
-    ActionType.FERTILIZING: "f",
-    ActionType.REPOTTING: "r",
-}
 
 PAGE_SIZE_DAYS = 5
 
@@ -226,7 +209,7 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
-            me = await uow.users.get_or_create(cb.from_user.id)
+            me = await uow.users.get(cb.from_user.id)
             if getattr(plant, "user_id", None) != getattr(me, "id", None):
                 await cb.answer("Недоступно", show_alert=True)
                 return

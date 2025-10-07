@@ -45,7 +45,7 @@ class ActionLogsRepo(BaseRepo):
             action=action,
             status=status,
             source=source,
-            done_at_utc=done_at_utc,  # если None — сработает server_default=NOW()
+            done_at_utc=done_at_utc,
             plant_name_at_time=plant_name_at_time,
             note=note,
         )

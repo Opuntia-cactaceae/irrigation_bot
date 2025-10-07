@@ -199,7 +199,6 @@ async def on_subscribe_enter_code(m: types.Message, state: FSMContext):
             await m.answer(f"❌ {e}")
             return
 
-        # рендер инфо о подписке через репозитории
         sch = await uow.schedules.get(sub.schedule_id)
         plant = await uow.plants.get(sch.plant_id) if sch else None
 
@@ -220,7 +219,6 @@ async def on_subscribe_enter_code(m: types.Message, state: FSMContext):
 # ---------- SUBSCRIPTIONS: список и удаление ----------
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:"))
 async def on_subs_list(cb: types.CallbackQuery):
-    # settings:subs_list:<page>
     try:
         page = int(cb.data.split(":")[2])
     except Exception:
@@ -232,7 +230,6 @@ async def on_subs_list(cb: types.CallbackQuery):
         subs_repo = ScheduleSubscriptionsRepo(uow.session)
         subs = list(await subs_repo.list_by_user(me.id))
 
-        # соберём подписи: для каждого подписки — её расписание и растение
         items: List[dict] = []
         for s in subs:
             sch = await uow.schedules.get(s.schedule_id)
@@ -298,7 +295,6 @@ async def on_subs_delete(cb: types.CallbackQuery):
         await uow.commit()
 
     await cb.answer("Подписка удалена")
-    # вернёмся на ту же страницу
     await on_subs_list(
         types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message,
                             data=f"{PREFIX}:subs_list:{return_page}")

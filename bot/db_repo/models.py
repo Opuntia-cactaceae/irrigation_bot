@@ -74,10 +74,6 @@ class Plant(Base):
         back_populates="plant",
         cascade="all, delete-orphan",
     )
-    events: Mapped[list["Event"]] = relationship(
-        back_populates="plant",
-        cascade="all, delete-orphan",
-    )
 
 
 # Типы расписаний
@@ -158,11 +154,6 @@ class Schedule(Base):
 
     plant: Mapped["Plant"] = relationship(back_populates="schedules")
 
-    events: Mapped[list["Event"]] = relationship(
-        back_populates="schedule",
-        passive_deletes=True,
-        cascade="save-update, merge",
-    )
 
 class ActionStatus(enum.Enum):
     DONE = "DONE"
@@ -172,30 +163,6 @@ class ActionStatus(enum.Enum):
 class ActionSource(enum.Enum):
     SCHEDULE = "SCHEDULE"
     MANUAL = "MANUAL"
-
-class Event(Base):
-    __tablename__ = "events"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    plant_id: Mapped[int] = mapped_column(
-        ForeignKey("plants.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    schedule_id: Mapped[int | None] = mapped_column(
-        ForeignKey("schedules.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
-    done_at_utc: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    source: Mapped[ActionSource] = mapped_column(Enum(ActionSource), nullable=False)
-
-    plant: Mapped["Plant"] = relationship(back_populates="events")
-    schedule: Mapped["Schedule"] = relationship(back_populates="events")
 
 
 
