@@ -132,16 +132,9 @@ async def send_reminder(schedule_id: int):
                 ActionType.REPOTTING: "Время пересадки",
             }[sch.action]
 
-
             kb = InlineKeyboardBuilder()
-            kb.button(
-                text="✅ Сделано",
-                callback_data=RemindCb(action="done", schedule_id=schedule_id).pack()
-            )
-            kb.button(
-                text="⏭️ Пропустить",
-                callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack()
-            )
+            kb.button(text="✅ Сделано",  callback_data=RemindCb(action="done", schedule_id=schedule_id).pack())
+            kb.button(text="⏭️ Пропустить", callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack())
             kb.adjust(2)
 
             try:
@@ -153,11 +146,6 @@ async def send_reminder(schedule_id: int):
                 logger.info("[SEND OK] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action)
             except Exception as e:
                 logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
-
-
-
-            ev_id = await uow.jobs.log_event(schedule_id)
-            logger.debug("[EVENT LOGGED] event_id=%s schedule_id=%s", ev_id, schedule_id)
 
     finally:
         await bot.session.close()

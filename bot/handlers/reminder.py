@@ -1,4 +1,7 @@
 # bot/handlers/reminder.py
+from datetime import datetime
+import pytz
+
 from aiogram import Router
 from aiogram.types import CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
@@ -31,26 +34,31 @@ async def on_reminder_callback(cb: CallbackQuery, callback_data: RemindCb):
                 await cb.answer("Расписание неактивно", show_alert=False)
                 return
 
-            plant = await uow.plants.get(sch.plant_id) if getattr(sch, "plant_id", None) else None
-            user = await uow.users.get(plant.user_id) if plant else None
 
-            if cb.from_user and user and getattr(user, "tg_user_id", None):
+            plant = await uow.plants.get(getattr(sch, "plant_id", None)) if getattr(sch, "plant_id", None) else None
+            if not plant:
+                await cb.answer("Растение не найдено", show_alert=True)
+                return
+
+            user = await uow.users.get(plant.user_id)
+
+            if cb.from_user and getattr(user, "tg_user_id", None):
                 if cb.from_user.id != user.tg_user_id:
                     await cb.answer("Недоступно", show_alert=True)
                     return
 
+
             await uow.action_logs.create(
-                user_id=user.id if user else None,
+                user_id=plant.user_id,
+                plant_id=plant.id,
+                schedule_id=sch.id,
                 action=sch.action,
                 status=status,
                 source=ActionSource.SCHEDULE,
-                plant_id=plant.id if plant else None,
-                schedule_id=sch.id,
-                done_at_utc=None,
-                plant_name_at_time=plant.name if plant else None,
+                done_at_utc=datetime.now(pytz.UTC),
+                plant_name_at_time=plant.name,
                 note=None,
             )
-
         try:
             await cb.answer("Готово ✅" if status == ActionStatus.DONE else "Пропущено ⏭️", show_alert=False)
         except Exception:
