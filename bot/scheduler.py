@@ -68,12 +68,6 @@ def _is_interval_type(t) -> bool:
 def _calc_next_run_utc(
     *, sch: Schedule, user_tz: str, last_event_utc: datetime | None, now_utc: datetime
 ) -> datetime:
-    """
-    Возвращает ближайшее наступление (UTC) для данного расписания, строго > now_utc.
-    Гарантии:
-      • interval: если локальное время сегодня ещё не прошло — ставим на СЕГОДНЯ.
-      • weekly: если текущий локальный день в маске и время не прошло — СЕГОДНЯ, иначе — ближайший.
-    """
     if _is_interval_type(sch.type):
         return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
     else:
