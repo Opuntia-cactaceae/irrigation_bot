@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from typing import Optional
+
 import pytz
 
 from aiogram import Bot
@@ -66,13 +68,30 @@ def _is_interval_type(t) -> bool:
 
 
 def _calc_next_run_utc(
-    *, sch: Schedule, user_tz: str, last_event_utc: datetime | None, now_utc: datetime
+    *,
+    sch: Schedule,
+    user_tz: str,
+    last_event_utc: datetime | None,
+    last_event_source: Optional["ActionSource"],   # ← добавь это поле
+    now_utc: datetime,
 ) -> datetime:
     if _is_interval_type(sch.type):
-        return next_by_interval(last_event_utc, sch.interval_days, sch.local_time, user_tz, now_utc)
+        return next_by_interval(
+            last_event_utc,
+            sch.interval_days,
+            sch.local_time,
+            user_tz,
+            now_utc,
+        )
     else:
-        return next_by_weekly(last_event_utc, sch.weekly_mask, sch.local_time, user_tz, now_utc)
-
+        return next_by_weekly(
+            last_done_utc=last_event_utc,
+            last_done_source=last_event_source,
+            weekly_mask=sch.weekly_mask,
+            local_t=sch.local_time,
+            tz_name=user_tz,
+            now_utc=now_utc,
+        )
 
 def _on_job_event(event: JobExecutionEvent):
     try:

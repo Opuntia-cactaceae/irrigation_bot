@@ -90,11 +90,15 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
             for sch in schedules:
                 last = await uow.jobs.get_last_effective_done_utc(sch.id)
 
+                last_event_utc = last.done_at_utc if last else None
+                last_event_source = last.source if last else None
+
                 run_at_utc = _calc_next_run_utc(
                     sch=sch,
-                    user_tz=user_tz,
-                    last_event_utc=last,
-                    now_utc=now_utc,
+                    user_tz=user.tz,
+                    last_event_utc=last_event_utc,
+                    last_event_source=last_event_source,
+                    now_utc=datetime.utcnow().replace(tzinfo=pytz.UTC),
                 )
                 run_local = run_at_utc.astimezone(tz)
 
