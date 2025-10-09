@@ -30,15 +30,3 @@ class JobsRepo:
         return list((await self.session.execute(q)).scalars().all())
 
 
-
-    async def get_last_effective_done_utc(self, schedule_id: int) -> Optional[datetime]:
-        """
-        Возвращает опорную точку для перепланировки — последнее успешное выполнение.
-        """
-        q = select(func.max(ActionLog.done_at_utc)).where(
-            ActionLog.schedule_id == schedule_id,
-            ActionLog.status == ActionStatus.DONE,
-        )
-        res = await self.session.execute(q)
-        return res.scalar_one_or_none()
-
