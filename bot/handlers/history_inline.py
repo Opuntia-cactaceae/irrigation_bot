@@ -22,7 +22,6 @@ history_router = Router(name="history_inline")
 
 PREFIX = "cal"
 
-
 @dataclass
 class HistoryItem:
     dt_local: datetime
@@ -65,7 +64,7 @@ async def _get_history_week(
     user_tg_id: int,
     action: Optional[ActionType],
     plant_id: Optional[int],
-    week_offset: int = 0,  # 0 = текущая, -1 = предыдущая, ...
+    week_offset: int = 0,
 ) -> HistoryWeek:
     async with new_uow() as uow:
         user: User = await uow.users.get(user_tg_id)
@@ -124,7 +123,7 @@ async def _get_history_week(
         )
 
 
-# ---- Паблик АПИ для хэндлера ----
+
 async def show_history_root(
     target: types.Message | types.CallbackQuery,
     *,
@@ -166,7 +165,7 @@ async def show_history_root(
 
 
 def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Optional[int], start: date, end: date):
-    """Клавиатура для истории (mode=hist) с недельным сдвигом."""
+
     kb = InlineKeyboardBuilder()
 
 
@@ -178,7 +177,6 @@ def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Opt
             callback_data=f"{PREFIX}:act:hist:{week_offset}:{code}:{plant_id or 0}",
         )
     kb.adjust(4)
-
 
     kb.row(
         types.InlineKeyboardButton(
@@ -193,7 +191,9 @@ def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Opt
 
 
     prev_off = week_offset - 1
-    next_off = min(0, week_offset + 1)
+    has_next = week_offset < 0
+    next_off = (week_offset + 1) if has_next else 0
+
     label = f"{start:%d.%m}–{end:%d.%m}"
     kb.row(
         types.InlineKeyboardButton(
@@ -202,10 +202,18 @@ def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Opt
         ),
         types.InlineKeyboardButton(text=f"Неделя {label}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
-            text="▶️" if next_off < week_offset else "⏺",
+            text="▶️" if has_next else "⏺",
             callback_data=f"{PREFIX}:page:hist:{next_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
     )
+
+    if week_offset != 0:
+        kb.row(
+            types.InlineKeyboardButton(
+                text="🏠 К текущей неделе",
+                callback_data=f"{PREFIX}:page:hist:0:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            )
+        )
 
     kb.row(
         types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
@@ -240,15 +248,20 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
         wd = RU_WD[d.weekday()]
         lines.append(f"\n📅 <b>{d:%d.%m} ({wd})</b>")
         for it in day.items:
+
             act = ActionType.from_any(getattr(it, "action", None))
             act_emoji = ACT_TO_EMOJI.get(act, "•")
+
             raw_status = getattr(it, "status", ActionStatus.DONE)
             status = raw_status if isinstance(raw_status, ActionStatus) else ActionStatus.DONE
             status_emoji = STATUS_TO_EMOJI.get(status, "✅")
+
             t = it.dt_local.strftime("%H:%M")
+
             plant_lbl = it.plant_name
             pid = it.plant_id or 0
             sch = it.schedule_id or 0
+
 
             lines.append(f"  {t} {status_emoji} {act_emoji} {plant_lbl} (id:{pid}, sch:{sch})")
     return "\n".join(lines).lstrip()
@@ -256,6 +269,7 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
 
 @history_router.callback_query(F.data.regexp(r"^cal:(feed|page|act|root):hist:"))
 async def on_history_callbacks(cb: types.CallbackQuery):
+
     parts = cb.data.split(":")
     cmd = parts[1] if len(parts) > 1 else "noop"
 
