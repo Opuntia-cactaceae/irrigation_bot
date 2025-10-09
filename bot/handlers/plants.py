@@ -13,7 +13,7 @@ async def add_plant(m: types.Message):
     name = raw[1].strip() if len(raw) > 1 else "Растение"
 
     async with new_uow() as uow:
-        user = await uow.users.get_or_create(m.from_user.id)
+        user = await uow.users.get(m.from_user.id)
         await uow.plants.create(user_id=user.id, name=name)
 
     await m.answer(f"Добавлено: <b>{name}</b>\nТеперь можно настроить расписание: /set_schedule")

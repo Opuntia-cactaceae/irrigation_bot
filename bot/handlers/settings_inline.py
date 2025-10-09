@@ -45,9 +45,9 @@ def _action_emoji(action: ActionType | str) -> str:
     return {"watering": "💧", "fertilizing": "🧪", "repotting": "🪴", "custom": "🔖"}.get(val, "🔔")
 
 
-async def _get_or_create_user_by_tg(tg_id: int) -> User:
+async def create_user_by_tg(tg_id: int) -> User:
     async with new_uow() as uow:
-        return await uow.users.get_or_create(tg_id)
+        return await uow.users.create(tg_id)
 
 
 # ---------- Public entry ----------
@@ -78,7 +78,7 @@ async def on_share_menu(cb: types.CallbackQuery):
     tg_id = cb.from_user.id
     # собираем через репозитории:
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(tg_id)
+        me = await uow.users.get(tg_id)
         plants = await uow.plants.list_by_user(me.id)
 
         # плоский список активных расписаний с именами растений
@@ -139,7 +139,7 @@ async def on_share_make(cb: types.CallbackQuery):
 
     tg_id = cb.from_user.id
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(tg_id)
+        me = await uow.users.get(tg_id)
         # проверим, что расписание моё
         sch = await uow.schedules.get(schedule_id)
         if not sch:
@@ -190,7 +190,7 @@ async def on_subscribe_enter_code(m: types.Message, state: FSMContext):
     tg_id = m.from_user.id
 
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(tg_id)
+        me = await uow.users.get(tg_id)
         sub_repo = ScheduleSubscriptionsRepo(uow.session)
         try:
             sub = await sub_repo.subscribe_with_code(subscriber_user_id=me.id, code=code)
@@ -226,7 +226,7 @@ async def on_subs_list(cb: types.CallbackQuery):
 
     tg_id = cb.from_user.id
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(tg_id)
+        me = await uow.users.get(tg_id)
         subs_repo = ScheduleSubscriptionsRepo(uow.session)
         subs = list(await subs_repo.list_by_user(me.id))
 
@@ -284,7 +284,7 @@ async def on_subs_delete(cb: types.CallbackQuery):
 
     tg_id = cb.from_user.id
     async with new_uow() as uow:
-        me = await uow.users.get_or_create(tg_id)
+        me = await uow.users.get(tg_id)
         # проверим, что подписка моя
         subs_repo = ScheduleSubscriptionsRepo(uow.session)
         sub = await subs_repo.get(sub_id)

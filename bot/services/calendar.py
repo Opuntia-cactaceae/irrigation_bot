@@ -59,7 +59,7 @@ def _group_by_local_day(items: Iterable[FeedItem]) -> List[DayGroup]:
 
 async def _get_user_and_tz(user_tg_id: int) -> tuple[object, pytz.BaseTzInfo]:
     async with new_uow() as uow:
-        user = await uow.users.get_or_create(user_tg_id)
+        user = await uow.users.get(user_tg_id)
         tzname = getattr(user, "tz", None) or "UTC"
     try:
         tz = pytz.timezone(tzname)

@@ -31,7 +31,7 @@ def _slice(items: list, page: int, size: int = PAGE_SIZE):
 
 async def _get_user(user_tg_id: int):
     async with new_uow() as uow:
-        return await uow.users.get_or_create(user_tg_id)
+        return await uow.users.get(user_tg_id)
 
 
 async def _get_plants_with_filter(user_id: int, species_id: int | None):
@@ -151,7 +151,7 @@ async def _cascade_delete_plant(user_tg_id: int, plant_id: int) -> dict:
             pass
 
     async with new_uow() as uow:
-        me = await uow.users.get_by_tg_id(user_tg_id)
+        me = await uow.users.get(user_tg_id)
         plant = await uow.plants.get(plant_id)
         if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
             raise PermissionError("Недоступно")
@@ -202,13 +202,10 @@ async def _species_usage_count(user_id: int, species_id: int) -> int:
 
 
 async def _species_delete_if_unused(user_tg_id: int, species_id: int) -> dict:
-    """
-    Удаляет вид, только если к нему не привязаны растения пользователя.
-    Возвращает {'deleted': 1|0, 'blocked_by_usage': N}.
-    """
+
     res = {"deleted": 0, "blocked_by_usage": 0}
     async with new_uow() as uow:
-        me = await uow.users.get_by_tg_id(user_tg_id)
+        me = await uow.users.get(user_tg_id)
         sp = await uow.species.get(species_id)
         if not sp or getattr(sp, "user_id", None) != getattr(me, "id", None):
             raise PermissionError("Недоступно")
