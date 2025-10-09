@@ -74,6 +74,7 @@ async def get_feed(
             plants = [p for p in plants if p.id == plant_id]
 
         tz = _safe_tz(getattr(user, "tz", None))
+        tz_name = getattr(user, "tz", "UTC")
         today_local = datetime.now(tz).date()
 
         if mode == "upc":
@@ -109,15 +110,7 @@ async def get_feed(
 
             last_by_schedule: Dict[int, tuple[Optional[datetime], Optional[ActionSource]]] = {}
             for s in schedules:
-                logs = await uow.action_logs.list_by_schedule(
-                    s.id, limit=10, offset=0, with_relations=False
-                )
-                last_dt, last_src = None, None
-                for lg in logs:
-                    if lg.status == ActionStatus.DONE:
-                        last_dt, last_src = lg.done_at_utc, lg.source
-                        break
-                last_by_schedule[s.id] = (last_dt, last_src)
+                last_by_schedule[s.id] = await uow.action_logs.last_effective_done(s.id)
 
             for s in schedules:
                 base_now: datetime = start_utc - timedelta(seconds=1)
@@ -133,7 +126,7 @@ async def get_feed(
                             last_anchor,
                             s.interval_days,
                             s.local_time,
-                            getattr(user, "tz", "UTC"),
+                            tz_name,
                             base_now,
                         )
                     else:
@@ -142,7 +135,7 @@ async def get_feed(
                             last_done_source=last_src,
                             weekly_mask=s.weekly_mask,
                             local_t=s.local_time,
-                            tz_name=getattr(user, "tz", "UTC"),
+                            tz_name=tz_name,
                             now_utc=base_now,
                         )
 

@@ -152,7 +152,7 @@ async def send_reminder(schedule_id: int):
 
             try:
                 await bot.send_message(
-                    user.tg_user_id,
+                    user.id,
                     f"{emoji} {action_text}: {plant.name}",
                     reply_markup=kb.as_markup(),
                 )
@@ -187,13 +187,26 @@ async def plan_next_for_schedule(
         now_utc = datetime.now(tz=pytz.UTC)
 
         if run_at_override_utc is None:
-            last_db = await uow.jobs.get_last_effective_done_utc(schedule_id)
-            last = max([x for x in (last_db, last_override_utc) if x], default=last_db)
+            last_db_dt, last_db_src = await uow.action_logs.last_effective_done(sch.id)
+            candidates: list[tuple[datetime, ActionSource]] = []
+            if last_db_dt:
+                candidates.append((last_db_dt, last_db_src or ActionSource.SCHEDULE))
+            if last_override_utc:
+                candidates.append((last_override_utc, ActionSource.MANUAL))
+
+            last_dt, last_src = (max(candidates, key=lambda x: x[0]) if candidates else (None, None))
 
             if _is_interval_type(sch.type):
-                run_at = next_by_interval(last, sch.interval_days, sch.local_time, tz, now_utc)
+                run_at = next_by_interval(last_dt, sch.interval_days, sch.local_time, tz, now_utc)
             else:
-                run_at = next_by_weekly(last, sch.weekly_mask, sch.local_time, tz, now_utc)
+                run_at = next_by_weekly(
+                    last_done_utc=last_dt,
+                    last_done_source=last_src,
+                    weekly_mask=sch.weekly_mask,
+                    local_t=sch.local_time,
+                    tz_name=tz,
+                    now_utc=now_utc,
+                )
         else:
             run_at = run_at_override_utc
 

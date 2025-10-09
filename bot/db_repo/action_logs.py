@@ -179,33 +179,6 @@ class ActionLogsRepo(BaseRepo):
             q = q.options(selectinload(ActionLog.plant))
         return (await self.session.execute(q)).scalars().all()
 
-    # Последняя отметка "выполнено" — полезно для расчёта следующего запуска
-    async def last_done_for_schedule(self, schedule_id: int) -> Optional[datetime]:
-        q = (
-            select(ActionLog.done_at_utc)
-            .where(
-                ActionLog.schedule_id == schedule_id,
-                ActionLog.status == ActionStatus.DONE,
-            )
-            .order_by(desc(ActionLog.done_at_utc))
-            .limit(1)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
-
-    async def last_done_for_plant_action(self, plant_id: int, action: ActionType) -> Optional[datetime]:
-        q = (
-            select(ActionLog.done_at_utc)
-            .where(
-                ActionLog.plant_id == plant_id,
-                ActionLog.action == action,
-                ActionLog.status == ActionStatus.DONE,
-            )
-            .order_by(desc(ActionLog.done_at_utc))
-            .limit(1)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
-
-    # ---------- Stats / interval ----------
     async def count_by_user(
         self,
         user_id: int,
@@ -227,27 +200,19 @@ class ActionLogsRepo(BaseRepo):
         q = select(func.count()).where(and_(*conds))
         return (await self.session.execute(q)).scalar_one()
 
-    async def list_between(
-        self,
-        *,
-        user_id: int,
-        since: datetime,
-        until: datetime,
-        with_relations: bool = False,
-    ) -> Sequence[ActionLog]:
-        q = (
-            select(ActionLog)
-            .where(
-                ActionLog.user_id == user_id,
-                ActionLog.done_at_utc >= since,
-                ActionLog.done_at_utc < until,
-            )
-            .order_by(desc(ActionLog.done_at_utc))
-        )
-        if with_relations:
-            q = q.options(selectinload(ActionLog.plant), selectinload(ActionLog.schedule))
-        return (await self.session.execute(q)).scalars().all()
-
-    # ---------- Delete ----------
     async def delete(self, log_id: int) -> None:
         await self.session.execute(delete(ActionLog).where(ActionLog.id == log_id))
+
+    async def last_effective_done(self, schedule_id: int) -> tuple[Optional[datetime], Optional[ActionSource]]:
+        q = (
+            select(ActionLog.done_at_utc, ActionLog.source)
+            .where(
+                ActionLog.schedule_id == schedule_id,
+            )
+            .order_by(desc(ActionLog.done_at_utc))
+            .limit(1)
+        )
+        row = (await self.session.execute(q)).first()
+        if not row:
+            return None, None
+        return row[0], row[1]
