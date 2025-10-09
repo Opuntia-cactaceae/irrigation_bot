@@ -1,31 +1,138 @@
 # bot/handlers/history_inline.py
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime, date, time, timedelta, timezone as dt_tz
+from typing import Optional, List, Dict
+
+import pytz
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from datetime import datetime, timezone
-from typing import Optional
 
-from bot.services.calendar_feed import get_feed, Mode
-from bot.db_repo.models import ActionType, ActionStatus
-from bot.services.cal_shared import CODE_TO_ACTION as ACT_MAP, ACTION_TO_EMOJI as ACT_TO_EMOJI, ACTION_TO_CODE as ACT_TO_CODE, STATUS_TO_EMOJI
+from bot.db_repo.models import ActionType, ActionStatus, User
+from bot.db_repo.unit_of_work import new_uow
+from bot.services.cal_shared import (
+    CODE_TO_ACTION as ACT_MAP,
+    ACTION_TO_EMOJI as ACT_TO_EMOJI,
+    ACTION_TO_CODE as ACT_TO_CODE,
+    STATUS_TO_EMOJI,
+)
 
 history_router = Router(name="history_inline")
 
-PREFIX = "cal"  # тот же префикс, что и в календаре
-PAGE_SIZE_DAYS = 5
+PREFIX = "cal"
+
+
+@dataclass
+class HistoryItem:
+    dt_local: datetime
+    status: ActionStatus
+    action: ActionType
+    plant_id: Optional[int]
+    schedule_id: Optional[int]
+    plant_name: str
+
+@dataclass
+class HistoryDay:
+    date_local: date
+    items: List[HistoryItem]
+
+@dataclass
+class HistoryWeek:
+    week_offset: int
+    start_local: date
+    end_local: date
+    days: List[HistoryDay]
 
 
 
+def _safe_tz(name: Optional[str]):
+    try:
+        return pytz.timezone(name or "Europe/Amsterdam")
+    except Exception:
+        return pytz.timezone("Europe/Amsterdam")
 
+
+def _local_day_bounds_utc(tz, d: date):
+    start_local = tz.localize(datetime.combine(d, time(0, 0)))
+    end_local_excl = start_local + timedelta(days=1)
+    return start_local.astimezone(dt_tz.utc), end_local_excl.astimezone(dt_tz.utc)
+
+
+
+async def _get_history_week(
+    *,
+    user_tg_id: int,
+    action: Optional[ActionType],
+    plant_id: Optional[int],
+    week_offset: int = 0,  # 0 = текущая, -1 = предыдущая, ...
+) -> HistoryWeek:
+    async with new_uow() as uow:
+        user: User = await uow.users.get(user_tg_id)
+        tz = _safe_tz(getattr(user, "tz", None))
+
+        today = datetime.now(tz).date()
+        this_monday = today - timedelta(days=today.weekday())
+        monday = this_monday + timedelta(weeks=week_offset)
+        sunday = monday + timedelta(days=6)
+
+        since_utc, _ = _local_day_bounds_utc(tz, monday)
+        _, until_utc = _local_day_bounds_utc(tz, sunday + timedelta(days=1))
+
+        logs = await uow.action_logs.list_by_user(
+            user.id,
+            action=action or None,
+            status=None,
+            since=since_utc,
+            until=until_utc,
+            limit=10_000,
+            offset=0,
+            with_relations=False,
+        )
+
+        if plant_id:
+            logs = [lg for lg in logs if lg.plant_id == plant_id]
+
+        bucket: Dict[date, List[HistoryItem]] = {}
+        for lg in logs:
+            dt_local = lg.done_at_utc.astimezone(tz)
+            d = dt_local.date()
+            if d < monday or d > sunday:
+                continue
+            item = HistoryItem(
+                dt_local=dt_local,
+                status=lg.status,
+                action=lg.action,
+                plant_id=lg.plant_id,
+                schedule_id=lg.schedule_id,
+                plant_name=(getattr(lg, "plant_name_at_time", None) or "(без растения)"),
+            )
+            bucket.setdefault(d, []).append(item)
+
+        days: List[HistoryDay] = []
+        cur = monday
+        while cur <= sunday:
+            items = sorted(bucket.get(cur, []), key=lambda x: x.dt_local, reverse=True)
+            days.append(HistoryDay(date_local=cur, items=items))
+            cur += timedelta(days=1)
+
+        return HistoryWeek(
+            week_offset=week_offset,
+            start_local=monday,
+            end_local=sunday,
+            days=days,
+        )
+
+
+# ---- Паблик АПИ для хэндлера ----
 async def show_history_root(
     target: types.Message | types.CallbackQuery,
     *,
     action: Optional[ActionType] = None,
     plant_id: Optional[int] = None,
-    page: int = 1,
+    week_offset: int = 0,
 ):
-    # получаем message и user_id из target
+
     if isinstance(target, types.CallbackQuery):
         message = target.message
         user_id = target.from_user.id
@@ -33,18 +140,22 @@ async def show_history_root(
         message = target
         user_id = target.from_user.id
 
-    feed_page = await get_feed(
+    hist = await _get_history_week(
         user_tg_id=user_id,
         action=action,
         plant_id=plant_id,
-        mode="hist",
-        page=page,
-        days_per_page=PAGE_SIZE_DAYS,
+        week_offset=week_offset,
     )
 
-    header = _render_header(action, plant_id)
-    body = _render_feed_text(feed_page)
-    kb = _kb_history(page=feed_page.page, pages=feed_page.pages, action=action, plant_id=plant_id)
+    header = _render_header(action, plant_id, hist.start_local, hist.end_local)
+    body = _render_feed_text(hist)
+    kb = _kb_history(
+        week_offset=hist.week_offset,
+        action=action,
+        plant_id=plant_id,
+        start=hist.start_local,
+        end=hist.end_local,
+    )
 
     text = header + "\n" + body
     if isinstance(target, types.CallbackQuery):
@@ -54,46 +165,48 @@ async def show_history_root(
         await message.answer(text, reply_markup=kb)
 
 
-def _kb_history(page: int, pages: int, action: Optional[ActionType], plant_id: Optional[int]):
-    """Клавиатура для истории (mode=hist)."""
+def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Optional[int], start: date, end: date):
+    """Клавиатура для истории (mode=hist) с недельным сдвигом."""
     kb = InlineKeyboardBuilder()
 
-    # переключатели по действию
+
     for text, code in (("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")):
         active = (ACT_TO_CODE.get(action) == code)
         mark = "✓ " if active and code != "all" else ""
         kb.button(
             text=f"{mark}{text}",
-            callback_data=f"{PREFIX}:act:hist:{page}:{code}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:act:hist:{week_offset}:{code}:{plant_id or 0}",
         )
     kb.adjust(4)
 
-    # переключение между разделами
+
     kb.row(
         types.InlineKeyboardButton(
             text="📌 Ближайшие",
-            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:feed:upc:0:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
         types.InlineKeyboardButton(
             text="📜 История ✓",
-            callback_data=f"{PREFIX}:feed:hist:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:feed:hist:{week_offset}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
     )
 
-    # пагинация
+
+    prev_off = week_offset - 1
+    next_off = min(0, week_offset + 1)
+    label = f"{start:%d.%m}–{end:%d.%m}"
     kb.row(
         types.InlineKeyboardButton(
             text="◀️",
-            callback_data=f"{PREFIX}:page:hist:{max(1, page-1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            callback_data=f"{PREFIX}:page:hist:{prev_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
-        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
+        types.InlineKeyboardButton(text=f"Неделя {label}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
-            text="▶️",
-            callback_data=f"{PREFIX}:page:hist:{min(pages, page+1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
+            text="▶️" if next_off < week_offset else "⏺",
+            callback_data=f"{PREFIX}:page:hist:{next_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
         ),
     )
 
-    # нижний ряд навигации
     kb.row(
         types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
@@ -101,7 +214,7 @@ def _kb_history(page: int, pages: int, action: Optional[ActionType], plant_id: O
     return kb.as_markup()
 
 
-def _render_header(action: Optional[ActionType], plant_id: Optional[int]) -> str:
+def _render_header(action: Optional[ActionType], plant_id: Optional[int], start: date, end: date) -> str:
     act_label = {
         None: "Все действия",
         ActionType.WATERING: "Полив",
@@ -112,76 +225,63 @@ def _render_header(action: Optional[ActionType], plant_id: Optional[int]) -> str
     return (
         f"📅 <b>Календарь</b>\n"
         f"Фильтр: <b>{act_label}</b> · <i>{plant_label}</i>\n"
-        f"Раздел: <b>История</b>"
+        f"Раздел: <b>История</b> · Неделя <b>{start:%d.%m}–{end:%d.%m}</b>"
     )
 
 
-def _render_feed_text(feed_page) -> str:
-    if not getattr(feed_page, "days", None):
+def _render_feed_text(feed_week: HistoryWeek) -> str:
+    if not getattr(feed_week, "days", None):
         return "Пока пусто."
 
-    lines: list[str] = []
-    for day in feed_page.days:
+    RU_WD = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+    lines: List[str] = []
+    for day in feed_week.days:
         d = day.date_local
-        lines.append(f"\n📅 <b>{d:%d.%m (%a)}</b>")
+        wd = RU_WD[d.weekday()]
+        lines.append(f"\n📅 <b>{d:%d.%m} ({wd})</b>")
         for it in day.items:
-            # действие: в Enum и эмодзи
             act = ActionType.from_any(getattr(it, "action", None))
             act_emoji = ACT_TO_EMOJI.get(act, "•")
-
-            # статус: в Enum и эмодзи (поддержка str/Enum), по умолчанию DONE
             raw_status = getattr(it, "status", ActionStatus.DONE)
-            if isinstance(raw_status, str):
-                try:
-                    status = ActionStatus(raw_status)
-                except Exception:
-                    status = ActionStatus.DONE
-            else:
-                status = raw_status or ActionStatus.DONE
+            status = raw_status if isinstance(raw_status, ActionStatus) else ActionStatus.DONE
             status_emoji = STATUS_TO_EMOJI.get(status, "✅")
-            if getattr(it, "dt_local", None):
-                t = it.dt_local.strftime("%H:%M")
-            elif getattr(it, "dt_utc", None):
-                t = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
-            else:
-                t = "—:—"
+            t = it.dt_local.strftime("%H:%M")
+            plant_lbl = it.plant_name
+            pid = it.plant_id or 0
+            sch = it.schedule_id or 0
 
-            lines.append(f"  {t} {status_emoji} {act_emoji} {it.plant_name} (id:{it.plant_id})")
+            lines.append(f"  {t} {status_emoji} {act_emoji} {plant_lbl} (id:{pid}, sch:{sch})")
     return "\n".join(lines).lstrip()
 
 
 @history_router.callback_query(F.data.regexp(r"^cal:(feed|page|act|root):hist:"))
 async def on_history_callbacks(cb: types.CallbackQuery):
-    """
-    Обрабатываем только ветку с mode='hist':
-      cal:feed:hist:...
-      cal:page:hist:...
-      cal:act:hist:...
-    Остальное игнорируем — оставим calendar_inline.
-    """
     parts = cb.data.split(":")
     cmd = parts[1] if len(parts) > 1 else "noop"
 
-    # быстро выходим, если это не история
     if cmd not in ("feed", "page", "act", "root"):
         return
-    mode: Mode = (parts[2] if len(parts) > 2 else "upc")
+    mode = (parts[2] if len(parts) > 2 else "upc")
     if mode != "hist":
         return
 
-    if cmd in ("root", "feed", "page", "act"):
-        page = int(parts[3]) if len(parts) > 3 else 1
-        act_code = parts[4] if len(parts) > 4 else "all"
-        pid = int(parts[5]) if len(parts) > 5 else 0
+    try:
+        week_offset = int(parts[3]) if len(parts) > 3 else 0
+    except Exception:
+        week_offset = 0
 
-        action = ACT_MAP.get(act_code, None)
-        plant_id = pid or None
+    act_code = parts[4] if len(parts) > 4 else "all"
+    pid = int(parts[5]) if len(parts) > 5 else 0
 
-        return await show_history_root(
-            cb,
-            action=action,
-            plant_id=plant_id,
-            page=page,
-        )
+    action = ACT_MAP.get(act_code, None)
+    plant_id = pid or None
 
-    await cb.answer()
+    if week_offset > 0:
+        week_offset = 0
+
+    return await show_history_root(
+        cb,
+        action=action,
+        plant_id=plant_id,
+        week_offset=week_offset,
+    )
