@@ -9,7 +9,6 @@ from aiogram.client.default import DefaultBotProperties
 from bot.config import settings
 from bot.db_repo.base import engine
 from bot.db_repo.models import Base
-from bot.handlers import remind_actions
 from bot.handlers.history_inline import history_router
 
 from bot.handlers.main_menu import main_menu_router
@@ -56,7 +55,6 @@ async def main():
     dp.include_router(reminder_router)
     dp.include_router(quick_done_router)
     dp.include_router(delete_router)
-    dp.include_router(remind_actions)
 
     start_scheduler()
     await plan_all_active()
