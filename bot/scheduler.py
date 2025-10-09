@@ -233,7 +233,6 @@ async def plan_next_for_schedule(
     logger.info('[JOB ADDED] id=%s run_at_utc=%s store="default"', job_id, run_at.isoformat())
 
 async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime | None = None):
-
     if done_at_utc is None:
         done_at_utc = datetime.now(tz=pytz.UTC)
 
@@ -256,17 +255,18 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
         )
 
     if _is_interval_type(sch.type):
-        run_at = next_by_interval(done_at_utc, sch.interval_days, sch.local_time, tz, done_at_utc)
+        run_at = next_by_interval(
+            done_at_utc, sch.interval_days, sch.local_time, tz, done_at_utc
+        )
     else:
-        ns1 = next_by_weekly(None, sch.weekly_mask, sch.local_time, tz, done_at_utc)
-
-        if done_at_utc < ns1:
-
-            run_at = next_by_weekly(ns1, sch.weekly_mask, sch.local_time, tz, ns1)
-        else:
-
-            run_at = next_by_weekly(done_at_utc, sch.weekly_mask, sch.local_time, tz, done_at_utc)
-
+        run_at = next_by_weekly(
+            last_done_utc=done_at_utc,
+            last_done_source=ActionSource.MANUAL,
+            weekly_mask=sch.weekly_mask,
+            local_t=sch.local_time,
+            tz_name=tz,
+            now_utc=done_at_utc,
+        )
 
     await plan_next_for_schedule(schedule_id, run_at_override_utc=run_at)
 

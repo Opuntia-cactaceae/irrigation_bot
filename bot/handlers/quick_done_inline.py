@@ -9,7 +9,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType, ScheduleType, ActionSource
-from bot.services.rules import next_by_interval, next_by_weekly
 from bot.scheduler import manual_done_and_reschedule, _calc_next_run_utc
 
 router = Router(name="quick_done_inline")
