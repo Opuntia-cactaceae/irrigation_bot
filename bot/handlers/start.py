@@ -18,7 +18,7 @@ async def start(m: types.Message):
 
         user = await uow.users.get(tg_id)
         if not user:
-            user = await uow.users.create(tg_user_id=tg_id, tz="UTC")
+            user = await uow.users.create(id=tg_id, tz="UTC")
 
         if not getattr(user, "tz", None):
             await uow.users.set_timezone(user.id, "UTC")
