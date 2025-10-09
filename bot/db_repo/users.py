@@ -15,8 +15,8 @@ class UsersRepo(BaseRepo):
         q = select(User).where(User.id == tg_user_id)
         return (await self.session.execute(q)).scalar_one_or_none()
 
-    async def create(self, tg_user_id: int, tz: str = "Europe/Amsterdam") -> User:
-        user = User(id=tg_user_id, tz=tz)
+    async def create(self, id: int, tz: str = "Europe/Amsterdam") -> User:
+        user = User(id=id, tz=tz)
         await self.add(user)
         await self.session.flush()
         return user
