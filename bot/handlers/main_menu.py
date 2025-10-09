@@ -30,7 +30,6 @@ async def show_main_menu(message_or_cb: types.Message | types.CallbackQuery):
     else:
         await message_or_cb.answer(text, reply_markup=kb)
 
-@main_menu_router.message(CommandStart())
 async def on_start(m: types.Message):
     await show_main_menu(m)
 

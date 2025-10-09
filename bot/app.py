@@ -19,6 +19,7 @@ from bot.handlers.schedule_delete_inline import delete_router
 from bot.handlers.schedule_inline import router as schedule_router
 from bot.handlers.quick_done_inline import router as quick_done_router
 from bot.handlers.remind_actions import router as reminder_router
+from bot.handlers.start import router as start_router
 
 
 from bot.scheduler import start_scheduler, plan_all_active
@@ -45,7 +46,7 @@ async def main():
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
-
+    dp.include_router(start_router)
     dp.include_router(main_menu_router)
     dp.include_router(history_router)
     dp.include_router(help_router)
