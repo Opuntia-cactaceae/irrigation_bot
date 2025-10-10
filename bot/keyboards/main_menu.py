@@ -1,10 +1,10 @@
 # bot/keyboards/main_menu.py
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# префикс колбэков главного меню
+
 MENU_PREFIX = "menu"
 
-# кнопки (cb_data компактные и явные)
+
 CB_CALENDAR = f"{MENU_PREFIX}:calendar"
 CB_PLANTS   = f"{MENU_PREFIX}:plants"
 CB_DONE     = f"{MENU_PREFIX}:done"
@@ -18,7 +18,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🌿 Растения",  callback_data=CB_PLANTS),
         ],
         [
-            InlineKeyboardButton(text="✅ Отметить выполнено", callback_data=CB_DONE),
+            InlineKeyboardButton(text="✅ Отметить выполнение", callback_data=CB_DONE),
         ],
         [
             InlineKeyboardButton(text="⚙️ Настройки", callback_data=CB_SETTINGS),

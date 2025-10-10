@@ -29,7 +29,7 @@ async def start(m: types.Message):
         kb.row(
             types.InlineKeyboardButton(
                 text="📋 Открыть главное меню",
-                callback_data=f"{MENU_PREFIX}:root"  # попадает в on_main_menu_click и покажет меню
+                callback_data=f"{MENU_PREFIX}:root"
             )
         )
 

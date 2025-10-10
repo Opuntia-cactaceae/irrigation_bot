@@ -216,7 +216,6 @@ def _kb_history(*, week_offset: int, action: Optional[ActionType], plant_id: Opt
         )
 
     kb.row(
-        types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
     )
     return kb.as_markup()
@@ -229,10 +228,9 @@ def _render_header(action: Optional[ActionType], plant_id: Optional[int], start:
         ActionType.FERTILIZING: "Удобрения",
         ActionType.REPOTTING: "Пересадка",
     }[action]
-    plant_label = "Все растения" if not plant_id else f"Растение #{plant_id}"
     return (
         f"📅 <b>Календарь</b>\n"
-        f"Фильтр: <b>{act_label}</b> · <i>{plant_label}</i>\n"
+        f"Фильтр: <b>{act_label}</b>\n"
         f"Раздел: <b>История</b> · Неделя <b>{start:%d.%m}–{end:%d.%m}</b>"
     )
 

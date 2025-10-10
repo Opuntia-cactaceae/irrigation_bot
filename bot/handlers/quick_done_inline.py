@@ -141,7 +141,7 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
             await message.answer(text, reply_markup=kb.as_markup())
         return
 
-    lines = ["✅ <b>Отметить выполнено</b>", "Ближайшие задачи:"]
+    lines = ["✅ <b>Отметить выполнение</b>", "Ближайшие задачи:"]
     kb = InlineKeyboardBuilder()
 
     for idx, it in enumerate(items, start=1):

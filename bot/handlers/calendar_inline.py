@@ -88,16 +88,26 @@ def _kb_calendar(
         ),
     )
 
+    has_prev = page > 1
+    has_next = page < pages
+    prev_page = page - 1 if has_prev else 1
+    next_page = page + 1 if has_next else pages
+
+    left_text = "◀️" if has_prev else "⏺"
+    left_cb = (
+        f"{PREFIX}:page:{mode}:{prev_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}"
+        if has_prev else f"{PREFIX}:noop"
+    )
+    right_text = "▶️" if has_next else "⏺"
+    right_cb = (
+        f"{PREFIX}:page:{mode}:{next_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}"
+        if has_next else f"{PREFIX}:noop"
+    )
+
     kb.row(
-        types.InlineKeyboardButton(
-            text="◀️",
-            callback_data=f"{PREFIX}:page:{mode}:{max(1, page-1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
-        ),
+        types.InlineKeyboardButton(text=left_text, callback_data=left_cb),
         types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-        types.InlineKeyboardButton(
-            text="▶️",
-            callback_data=f"{PREFIX}:page:{mode}:{min(pages, page+1)}:{ACT_TO_CODE.get(action)}:{plant_id or 0}",
-        ),
+        types.InlineKeyboardButton(text=right_text, callback_data=right_cb),
     )
 
     kb.row(
@@ -111,7 +121,6 @@ def _kb_calendar(
         ),
     )
     kb.row(
-        types.InlineKeyboardButton(text="🌿 Растения", callback_data="plants:page:1:0"),
         types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"),
     )
 
@@ -126,10 +135,9 @@ def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[
         ActionType.REPOTTING: "Пересадка",
     }[action]
     mode_label = "Ближайшие" if mode == "upc" else "История"
-    plant_label = "Все растения" if not plant_id else f"Растение #{plant_id}"
     return (
         f"📅 <b>Календарь</b>\n"
-        f"Фильтр: <b>{act_label}</b> · <i>{plant_label}</i>\n"
+        f"Фильтр: <b>{act_label}</b>\n"
         f"Раздел: <b>{mode_label}</b>"
     )
 

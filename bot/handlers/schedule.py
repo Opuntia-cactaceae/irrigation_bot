@@ -94,7 +94,7 @@ async def set_schedule(m: types.Message):
             try:
                 days = int(spec)
             except Exception:
-                return await m.answer("Для interval укажи целое число дней, например: 3")
+                return await m.answer("Для интервала укажи целое число дней, например: 3")
 
             created = await uow.schedules.create(
                 plant_id=plant.id,
@@ -107,7 +107,7 @@ async def set_schedule(m: types.Message):
         else:
             mask = _parse_weekly_mask(spec)
             if mask == 0:
-                return await m.answer("Для weekly укажи дни, например: Mon,Thu")
+                return await m.answer("Для планирования по дням недели укажи дни, например: Mon,Thu")
 
             created = await uow.schedules.create(
                 plant_id=plant.id,
