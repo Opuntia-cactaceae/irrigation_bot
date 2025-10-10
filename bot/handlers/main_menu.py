@@ -11,16 +11,16 @@ from bot.keyboards.main_menu import (
 
 main_menu_router = Router(name="main_menu")
 
-MENU_TITLE = "🤖 Помощник по уходу за растениями"
+MENU_TITLE = "Помощник по уходу за растениями"
 
 async def show_main_menu(message_or_cb: types.Message | types.CallbackQuery):
     text = (
         f"{MENU_TITLE}\n\n"
         "Выберите раздел:\n"
-        "• 📅 Календарь — посмотреть план по датам\n"
-        "• 🌿 Растения — список и управление\n"
-        "• ✅ Отметить выполнено — быстро зафиксировать действие\n"
-        "• ⚙️ Настройки — часовой пояс и пр."
+        "• 📅 Календарь — посмотреть запланированные события\n"
+        "• 🌿 Растения — список растений\n"
+        "• ✅ Отметить выполнение — быстро зафиксировать действие\n"
+        "• ⚙️ Настройки — часовой пояс, подписки и пр."
     )
     kb = main_menu_kb()
 
@@ -30,19 +30,15 @@ async def show_main_menu(message_or_cb: types.Message | types.CallbackQuery):
     else:
         await message_or_cb.answer(text, reply_markup=kb)
 
-@main_menu_router.message(CommandStart())
 async def on_start(m: types.Message):
-    # тут можно создать пользователя в БД, если нужно
     await show_main_menu(m)
 
-# --- обработчик нажатий главного меню ---
 @main_menu_router.callback_query(F.data.startswith(MENU_PREFIX + ":"))
 async def on_main_menu_click(cb: types.CallbackQuery):
     data = cb.data
 
     if data == CB_CALENDAR:
-        # переход в календарь: покажем корневой экран календаря (текущий месяц, без фильтров)
-        from .calendar_inline import show_calendar_root  # импорт локально, чтобы избежать циклов
+        from .calendar_inline import show_calendar_root
         now = datetime.now(timezone.utc)
         await show_calendar_root(cb, year=now.year, month=now.month, action=None, plant_id=None)
         return
@@ -54,6 +50,7 @@ async def on_main_menu_click(cb: types.CallbackQuery):
 
     if data == CB_DONE:
         from .quick_done_inline import show_quick_done_menu
+        print("CB_DONE")
         await show_quick_done_menu(cb)
         return
 
@@ -63,16 +60,8 @@ async def on_main_menu_click(cb: types.CallbackQuery):
         return
 
     if data == CB_HELP:
-        await cb.message.edit_text(
-            "❓ Помощь\n\n"
-            "• Настройте расписания для полива/удобрений/пересадки.\n"
-            "• В календаре видны ближайшие даты.\n"
-            "• Через «Отметить выполнено» фиксируйте действия и мы пересчитаем следующий раз.\n\n"
-            "↩️ Вернуться в меню — нажмите кнопку ниже.",
-            reply_markup=main_menu_kb()
-        )
-        await cb.answer()
+        from .help_inline import show_help
+        await show_help(cb)
         return
 
-    # fallback — просто обновим меню
     await show_main_menu(cb)

@@ -1,81 +1,153 @@
-from typing import Optional, Sequence
+# bot/db_repo/schedules.py
+from typing import Optional, Sequence, List
+from datetime import time as dtime
+
 from sqlalchemy import select, delete, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Schedule, ActionType, ScheduleType
-from .base import BaseRepo
+from .models import (
+    Schedule,
+    ActionType,
+    ScheduleType,
+    Plant,
+    User,
+    ScheduleSubscription,
+)
 
-class SchedulesRepo(BaseRepo):
+
+def _coerce_schedule_type(value) -> ScheduleType:
+    """
+    Мягко приводим вход к ScheduleType:
+    - уже Enum -> вернуть как есть
+    - строка ('interval'/'weekly', регистр не важен) -> Enum
+    """
+    if isinstance(value, ScheduleType):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v == "interval":
+            return ScheduleType.INTERVAL
+        if v == "weekly":
+            return ScheduleType.WEEKLY
+    raise ValueError(f"Unsupported schedule type: {value!r}")
+
+
+class SchedulesRepo:
+    """
+    Репозиторий расписаний.
+
+    Политика:
+    - НЕ перезаписываем существующие расписания.
+    - Создаём новые записи (независимые таймеры).
+    - Поддержка кастом-действий (ActionType.CUSTOM) с полями custom_title/custom_note_template.
+    """
+
     def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
+        self.session = session
+
+    # ---------- READ ----------
 
     async def get(self, schedule_id: int) -> Optional[Schedule]:
         return await self.session.get(Schedule, schedule_id)
 
-    async def get_for_plant_action(self, plant_id: int, action: ActionType) -> Optional[Schedule]:
-        q = select(Schedule).where(
-            and_(Schedule.plant_id == plant_id, Schedule.action == action)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
+    async def list_active(self) -> Sequence[Schedule]:
+        q = select(Schedule).where(Schedule.active.is_(True))
+        return (await self.session.execute(q)).scalars().all()
 
-    async def upsert_interval(
-        self, plant_id: int, action: ActionType, interval_days: int, local_time
+    async def list_by_plant(self, plant_id: int) -> List[Schedule]:
+        q = (
+            select(Schedule)
+            .where(Schedule.plant_id == plant_id)
+            .order_by(Schedule.id.desc())
+        )
+        return list((await self.session.execute(q)).scalars().all())
+
+    async def list_by_plant_action(self, plant_id: int, action: ActionType) -> List[Schedule]:
+        q = (
+            select(Schedule)
+            .where(and_(Schedule.plant_id == plant_id, Schedule.action == action))
+            .order_by(Schedule.id.desc())
+        )
+        return list((await self.session.execute(q)).scalars().all())
+
+    # ---------- WRITE ----------
+
+    async def create(
+        self,
+        *,
+        plant_id: int,
+        action: ActionType,
+        type: ScheduleType | str,
+        local_time: dtime,
+        interval_days: Optional[int] = None,
+        weekly_mask: Optional[int] = None,
+        active: bool = True,
+        # кастом-действие:
+        custom_title: Optional[str] = None,
+        custom_note_template: Optional[str] = None,
     ) -> Schedule:
-        existing = await self.get_for_plant_action(plant_id, action)
-        if existing:
-            existing.type = ScheduleType.INTERVAL
-            existing.interval_days = interval_days
-            existing.weekly_mask = None
-            existing.local_time = local_time
-            existing.active = True
-            await self.session.flush()
-            return existing
+        """
+        Создать НОВОЕ расписание.
+        Поле `type` — Enum ScheduleType (можно передать строку, она будет приведена).
+        Для action=CUSTOM можно (и желательно) указать custom_title/custom_note_template.
+        Для остальных action — custom_* будут обнулены.
+        """
+        type_enum = _coerce_schedule_type(type)
+
+        if action != ActionType.CUSTOM:
+            custom_title = None
+            custom_note_template = None
+
         sch = Schedule(
             plant_id=plant_id,
             action=action,
-            type=ScheduleType.INTERVAL,
+            type=type_enum,
             interval_days=interval_days,
-            weekly_mask=None,
-            local_time=local_time,
-            active=True,
-        )
-        return await self.add(sch)
-
-    async def upsert_weekly(
-        self, plant_id: int, action: ActionType, weekly_mask: int, local_time
-    ) -> Schedule:
-        existing = await self.get_for_plant_action(plant_id, action)
-        if existing:
-            existing.type = ScheduleType.WEEKLY
-            existing.interval_days = None
-            existing.weekly_mask = weekly_mask
-            existing.local_time = local_time
-            existing.active = True
-            await self.session.flush()
-            return existing
-        sch = Schedule(
-            plant_id=plant_id,
-            action=action,
-            type=ScheduleType.WEEKLY,
-            interval_days=None,
             weekly_mask=weekly_mask,
             local_time=local_time,
-            active=True,
+            active=active,
+            custom_title=custom_title,
+            custom_note_template=custom_note_template,
         )
-        return await self.add(sch)
+        self.session.add(sch)
+        await self.session.flush()
+        return sch
+
+    async def update(self, schedule_id: int, **fields) -> None:
+        """
+        Обновить произвольные поля расписания.
+        Примечание: если action != CUSTOM — custom_* будут обнулены даже если передать.
+        Также мягко приводим type (если передан) к ScheduleType.
+        """
+        if not fields:
+            return
+
+
+        if "type" in fields and fields["type"] is not None:
+            fields["type"] = _coerce_schedule_type(fields["type"])
+
+
+        new_action: Optional[ActionType] = fields.get("action")
+        if new_action is not None and new_action != ActionType.CUSTOM:
+            fields.setdefault("custom_title", None)
+            fields.setdefault("custom_note_template", None)
+
+        await self.session.execute(
+            update(Schedule).where(Schedule.id == schedule_id).values(**fields)
+        )
 
     async def set_active(self, schedule_id: int, active: bool) -> None:
-        await self.session.execute(
-            update(Schedule).where(Schedule.id == schedule_id).values(active=active)
-        )
+        await self.update(schedule_id, active=active)
+
+    async def delete(self, schedule_id: int) -> None:
+        await self.session.execute(delete(Schedule).where(Schedule.id == schedule_id))
 
     async def delete_for_plant_action(self, plant_id: int, action: ActionType) -> None:
+        """
+        Массовое удаление — используется для команды «Удалить всё».
+        """
         await self.session.execute(
             delete(Schedule).where(
                 and_(Schedule.plant_id == plant_id, Schedule.action == action)
             )
         )
-
-    async def list_active(self) -> Sequence[Schedule]:
-        q = select(Schedule).where(Schedule.active.is_(True))
-        return (await self.session.execute(q)).scalars().all()

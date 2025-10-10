@@ -23,9 +23,8 @@ class PlantsRepo(BaseRepo):
             .where(Plant.id == plant_id)
             .options(
                 selectinload(Plant.user),
-                selectinload(Plant.species),     # <-- добавили
-                selectinload(Plant.schedules),
-                selectinload(Plant.events),
+                selectinload(Plant.species),
+                selectinload(Plant.schedules)
             )
         )
         return (await self.session.execute(q)).scalar_one_or_none()
@@ -39,9 +38,8 @@ class PlantsRepo(BaseRepo):
             select(Plant)
             .where(Plant.user_id == user_id)
             .options(
-                selectinload(Plant.species),     # <-- добавили
-                selectinload(Plant.schedules),
-                selectinload(Plant.events),
+                selectinload(Plant.species),
+                selectinload(Plant.schedules)
             )
         )
         return (await self.session.execute(q)).scalars().all()

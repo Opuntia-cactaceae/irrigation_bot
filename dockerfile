@@ -2,17 +2,15 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Системные зависимости (psycopg нужен для alembic; asyncpg — для приложения)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем проект
 COPY . .
 
-# Переменные окружения: вывод Python без буферизации
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-CMD bash -lc "alembic -c db_repo/migrations/alembic.ini upgrade head && python -m bot.app"
+CMD bash -lc "alembic -c alembic.ini upgrade head && python -m bot.app"

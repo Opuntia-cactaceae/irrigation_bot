@@ -1,18 +1,40 @@
-# handlers/start.py
+# bot/handlers/start.py
 from aiogram import Router, types
-from .db import SessionLocal
-from ..models import User
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-router = Router()
+from bot.db_repo.unit_of_work import new_uow
+from bot.keyboards.main_menu import MENU_PREFIX
 
-@router.message(commands={"start"})
+
+router = Router(name="start")
+
+
+@router.message(CommandStart())
 async def start(m: types.Message):
-    async with SessionLocal() as s:
-        user = (await s.execute(
-            User.__table__.select().where(User.tg_user_id == m.from_user.id)
-        )).scalar_one_or_none()
+    tg_id = m.from_user.id
+
+    async with new_uow() as uow:
+
+        user = await uow.users.get(tg_id)
         if not user:
-            user = User(tg_user_id=m.from_user.id)  # tz по умолчанию
-            s.add(user)
-            await s.commit()
-    await m.answer("Привет! Я помогу с поливом 🌿\nДобавь растение: /add_plant")
+            user = await uow.users.create(id=tg_id, tz="UTC")
+
+        if not getattr(user, "tz", None):
+            await uow.users.set_timezone(user.id, "UTC")
+
+        await uow.commit()
+
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            types.InlineKeyboardButton(
+                text="📋 Открыть главное меню",
+                callback_data=f"{MENU_PREFIX}:root"
+            )
+        )
+
+        await m.answer(
+            "Привет! Я помогу с поливом 🌿\n"
+            "Нажми кнопку ниже, чтобы открыть главное меню.",
+            reply_markup=kb.as_markup()
+        )
