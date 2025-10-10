@@ -80,11 +80,11 @@ def kb_species_list(
         kb.row(
             types.InlineKeyboardButton(text="✍️ Ввести свой вид", callback_data=f"{prefix}:species_add_text"),
         )
-        add_back_row(kb, f"{prefix}:back_to_list:1", text="↩️ Отмена")
-    else:
         kb.row(
-            types.InlineKeyboardButton(text="➕ Добавить вид (текстом)", callback_data=f"{prefix}:species_add_text"),
+            types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"{prefix}:back"),
+            types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{prefix}:back_to_list:{page}"),
         )
+    else:
         add_back_row(kb, f"{prefix}:page:1:0", text="↩️ К списку")
 
     return kb.as_markup()
@@ -93,6 +93,10 @@ def kb_add_species_mode(*, prefix: str = DEFAULT_PREFIX):
     kb = InlineKeyboardBuilder()
     kb.button(text="🧬 Выбрать из списка", callback_data=f"{prefix}:species_pick_list")
     kb.button(text="✍️ Ввести свой вид", callback_data=f"{prefix}:species_add_text")
+    kb.row(
+        types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"{prefix}:back"),
+        types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{prefix}:back_to_list:1"),
+    )
     kb.adjust(1)
     return kb.as_markup()
 
@@ -128,7 +132,11 @@ def kb_plants_list_page(
     return kb.as_markup()
 
 def kb_cancel_to_list(*, page: int = 1, prefix: str = DEFAULT_PREFIX):
-    return kb_back(f"{prefix}:back_to_list:{page}", text="↩️ Отмена")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Назад", callback_data=f"{prefix}:back")
+    kb.button(text="↩️ Отмена", callback_data=f"{prefix}:back_to_list:{page}")
+    kb.adjust(2)
+    return kb.as_markup()
 
 def kb_delete_plants_menu(
     *,

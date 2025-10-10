@@ -46,6 +46,19 @@ STEP_TO_STATE = {
     AddPlantStep.SPECIES_TEXT: AddPlantStates.waiting_species_text,
 }
 
+async def _remember_bot_message(state: FSMContext, msg: types.Message):
+    await state.update_data(_last_bot_chat_id=msg.chat.id, _last_bot_msg_id=msg.message_id)
+
+async def _clear_prev_markup_if_any(state: FSMContext, bot):
+    data = await state.get_data()
+    chat_id = data.get("_last_bot_chat_id")
+    msg_id = data.get("_last_bot_msg_id")
+    if chat_id and msg_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=None)
+        except Exception:
+            pass
+
 async def _next_step(state: FSMContext, step: AddPlantStep):
     data = await state.get_data()
     steps: list[str] = data.get("steps", [])
@@ -283,8 +296,10 @@ async def on_species_page(cb: types.CallbackQuery):
 
 @plants_router.callback_query(F.data.startswith(f"{PREFIX}:set_species"))
 async def on_set_species(cb: types.CallbackQuery):
-    species_id = int(cb.data.split(":")[2]) or None
-    await show_plants_list(cb, page=1, species_id=species_id)
+    parts = cb.data.split(":")
+    species_id = int(parts[2]) or None
+    page = int(parts[3]) if len(parts) > 3 else 1
+    await show_plants_list(cb, page=page, species_id=species_id)
 
 async def render_waiting_name(msg: types.Message, state: FSMContext):
     await state.set_state(AddPlantStates.waiting_name)
@@ -293,16 +308,18 @@ async def render_waiting_name(msg: types.Message, state: FSMContext):
     text = "✍️ Введите <b>название</b> растения сообщением (свободный текст)."
     if preset:
         text += f"\n\nТекущее: <b>{preset}</b>"
-    await msg.edit_text(text, reply_markup=kb_cancel_to_list(page=1, prefix=PREFIX))
+    sent = await msg.edit_text(text, reply_markup=kb_cancel_to_list(page=1, prefix=PREFIX))
+    await _remember_bot_message(state, sent)
 
 async def render_species_mode(msg: types.Message, user_id: int, state: FSMContext, *, page: int = 1):
     await state.set_state(AddPlantStates.waiting_species_mode)
     user = await _get_user(user_id)
     species = await _get_species(user.id)
-    await msg.edit_text(
+    sent = await msg.edit_text(
         "🧬 Выберите <b>вид</b> из списка или введите свой.",
         reply_markup=kb_species_list(species, selected_id=None, page=page, for_add_flow=True, prefix=PREFIX),
     )
+    await _remember_bot_message(state, sent)
 
 async def render_species_text(msg: types.Message, state: FSMContext):
     await state.set_state(AddPlantStates.waiting_species_text)
@@ -311,7 +328,8 @@ async def render_species_text(msg: types.Message, state: FSMContext):
     text = "✍️ Введите название <b>вида</b> сообщением."
     if preset:
         text += f"\n\nТекущее: <b>{preset}</b>"
-    await msg.edit_text(text, reply_markup=kb_cancel_to_list(page=1, prefix=PREFIX))
+    sent = await msg.edit_text(text, reply_markup=kb_cancel_to_list(page=1, prefix=PREFIX))
+    await _remember_bot_message(state, sent)
 
 @plants_router.callback_query(F.data == f"{PREFIX}:add")
 async def on_add_plant_start(cb: types.CallbackQuery, state: FSMContext):
@@ -351,13 +369,10 @@ async def on_back(cb: types.CallbackQuery, state: FSMContext):
         return await show_plants_list(cb, page=1, species_id=None)
 
     if prev is AddPlantStep.NAME:
-        await state.set_state(STEP_TO_STATE[AddPlantStep.NAME])
         await render_waiting_name(cb.message, state)
     elif prev is AddPlantStep.SPECIES_MODE:
-        await state.set_state(STEP_TO_STATE[AddPlantStep.SPECIES_MODE])
         await render_species_mode(cb.message, cb.from_user.id, state, page=1)
     elif prev is AddPlantStep.SPECIES_TEXT:
-        await state.set_state(STEP_TO_STATE[AddPlantStep.SPECIES_TEXT])
         await render_species_text(cb.message, state)
     else:
         await state.clear()
@@ -377,8 +392,8 @@ async def on_back_to_list(cb: types.CallbackQuery, state: FSMContext):
 async def on_del_menu(cb: types.CallbackQuery, state: FSMContext):
     try:
         parts = cb.data.split(":")
-        page = int(parts[2]) if len(parts) > 2 else 1
-        species_id = int(parts[3]) or None if len(parts) > 3 else None
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+        species_id = (int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0) or None
     except Exception:
         page, species_id = 1, None
 
@@ -602,17 +617,23 @@ async def on_spdel_confirm(cb: types.CallbackQuery):
 
 @plants_router.message(AddPlantStates.waiting_name)
 async def input_plant_name(m: types.Message, state: FSMContext):
+    await _clear_prev_markup_if_any(state, m.bot)
     name = (m.text or "").strip()
     if not name:
         return await m.answer("Название пустое. Введите ещё раз или нажмите «Отмена».")
     await state.update_data(new_plant_name=name)
     await state.set_state(AddPlantStates.waiting_species_mode)
     await _next_step(state, AddPlantStep.SPECIES_MODE)
-    await m.answer(f"Ок, имя: <b>{name}</b>\nТеперь выберите способ указать вид:", reply_markup=kb_add_species_mode())
+    sent = await m.answer(
+        f"Ок, имя: <b>{name}</b>\nТеперь выберите способ указать вид:",
+        reply_markup=kb_add_species_mode()
+    )
+    await _remember_bot_message(state, sent)
 
 
 @plants_router.message(AddPlantStates.waiting_species_text)
 async def input_species_text(m: types.Message, state: FSMContext):
+    await _clear_prev_markup_if_any(state, m.bot)
     species_name = (m.text or "").strip()
     if not species_name:
         return await m.answer("Вид пустой. Введите ещё раз или нажмите «Отмена».")
