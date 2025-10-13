@@ -30,6 +30,7 @@ class HistoryItem:
     plant_id: Optional[int]
     schedule_id: Optional[int]
     plant_name: str
+    is_shared: bool = False
 
 @dataclass
 class HistoryDay:
@@ -78,7 +79,8 @@ async def _get_history_week(
         since_utc, _ = _local_day_bounds_utc(tz, monday)
         _, until_utc = _local_day_bounds_utc(tz, sunday + timedelta(days=1))
 
-        logs = await uow.action_logs.list_by_user(
+        # --- свои логи пользователя ---
+        own_logs = await uow.action_logs.list_by_user(
             user.id,
             action=action or None,
             status=None,
@@ -89,8 +91,22 @@ async def _get_history_week(
             with_relations=False,
         )
 
+        # --- логи из подписок (права проверяются в репозитории) ---
+        shared_logs = await uow.action_logs.list_shared_for_subscriber(
+            user.id,
+            action=action or None,
+            status=None,
+            since=since_utc,
+            until=until_utc,
+            limit=10_000,
+            offset=0,
+            with_relations=False,
+        )
+
+        logs = list(own_logs) + list(shared_logs)
+
         if plant_id:
-            logs = [lg for lg in logs if lg.plant_id == plant_id]
+            logs = [lg for lg in logs if getattr(lg, "plant_id", None) == plant_id]
 
         bucket: Dict[date, List[HistoryItem]] = {}
         for lg in logs:
@@ -98,13 +114,15 @@ async def _get_history_week(
             d = dt_local.date()
             if d < monday or d > sunday:
                 continue
+
             item = HistoryItem(
                 dt_local=dt_local,
                 status=lg.status,
                 action=lg.action,
-                plant_id=lg.plant_id,
-                schedule_id=lg.schedule_id,
+                plant_id=getattr(lg, "plant_id", None),
+                schedule_id=getattr(lg, "schedule_id", None),
                 plant_name=(getattr(lg, "plant_name_at_time", None) or "(без растения)"),
+                is_shared=bool(getattr(lg, "share_id", None)),  # 👈 метка «из подписки»
             )
             bucket.setdefault(d, []).append(item)
 
@@ -260,8 +278,9 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
             pid = it.plant_id or 0
             sch = it.schedule_id or 0
 
+            shared_mark = " 👥" if getattr(it, "is_shared", False) else ""
 
-            lines.append(f"  {t} {status_emoji} {act_emoji} {plant_lbl} (id:{pid}, sch:{sch})")
+            lines.append(f"  {t} {status_emoji} {act_emoji}{shared_mark} {plant_lbl} (id:{pid}, sch:{sch})")
     return "\n".join(lines).lstrip()
 
 
