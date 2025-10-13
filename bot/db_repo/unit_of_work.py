@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .action_logs import ActionLogsRepo
 from .base import AsyncSessionLocal
-from .share_link_schedules import ShareLinkSchedulesRepo
 from .share_links import ShareLinksRepo
 from .share_members import ShareMembersRepo
 
@@ -27,7 +26,6 @@ class UnitOfWork:
         self.jobs = JobsRepo(session)
         self.action_logs = ActionLogsRepo(session)
         self.share_links = ShareLinksRepo(session)
-        self.share_link_schedules = ShareLinkSchedulesRepo(session)
         self.share_members = ShareMembersRepo(session)
 
 

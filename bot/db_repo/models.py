@@ -129,7 +129,7 @@ class ActionType(enum.Enum):
         if isinstance(x, str):
             x_lower = x.lower()
             for m in cls:
-                if m.value == x_lower:
+                if m.value.lower() == x_lower:
                     return m
             by_name: dict[str, ActionType] = {m.name: m for m in cls}
             return by_name.get(x.upper())

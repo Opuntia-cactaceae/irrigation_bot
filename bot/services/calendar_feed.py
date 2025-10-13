@@ -178,10 +178,30 @@ async def get_feed(
 
         return FeedPage(page=page, pages=total_pages, days=days)
 
+from math import ceil
+from datetime import datetime, timedelta, date
+from typing import Optional, Dict, List
+import pytz
+
+# ожидается, что эти сущности/утилиты уже есть в проекте:
+# new_uow, _safe_tz, _localize_day_bounds, next_by_interval, next_by_weekly
+# UPC_MAX_DAYS, HIST_MAX_DAYS
+# User, Plant, Schedule, ShareLink, ShareMember, ShareMemberStatus, ActionSource, ActionType, ScheduleType
+# FeedPage, FeedDay, FeedItem
+
+
+def _mode_str(mode: object) -> str:
+    if isinstance(mode, str):
+        s = mode.lower()
+    else:
+        s = (getattr(mode, "value", None) or getattr(mode, "name", "") or "").lower()
+    return "hist" if s == "hist" else "upc"
+
+
 async def get_feed_subs(
     user_tg_id: int,
     action: Optional[ActionType],
-    mode: Mode,
+    mode,
     page: int,
     days_per_page: int,
 ) -> FeedPage:
@@ -192,128 +212,128 @@ async def get_feed_subs(
     - вычисляет наступления строго по тем же правилам, что get_feed
     """
     async with new_uow() as uow:
-        user: User = await uow.users.get(user_tg_id)
+        user: User | None = await uow.users.get(user_tg_id)
         if not user:
             return FeedPage(page=1, pages=1, days=[])
 
+        # --- TZ и окна периода ---
         tz = _safe_tz(getattr(user, "tz", None))
-        tz_name = getattr(user, "tz", "UTC")
+        tz_name = getattr(tz, "zone", None) or getattr(user, "tz", "UTC") or "UTC"
         today_local = datetime.now(tz).date()
         now_utc = datetime.now(pytz.UTC)
 
-        # окно дат
-        if mode == "upc":
-            page = max(1, page)
+        mode_str = _mode_str(mode)
+        page = max(1, int(page))
+        days_per_page = max(1, int(days_per_page))
+
+        if mode_str == "upc":
             start_local_day = today_local + timedelta(days=(page - 1) * days_per_page)
             end_local_day = start_local_day + timedelta(days=days_per_page - 1)
             max_days = UPC_MAX_DAYS
         else:
-            page = max(1, page)
             end_local_day = today_local - timedelta(days=(page - 1) * days_per_page + 1)
             start_local_day = end_local_day - timedelta(days=days_per_page - 1)
             max_days = HIST_MAX_DAYS
 
         total_pages = max(1, ceil(max_days / days_per_page))
 
-        start_local_dt, end_local_dt = _localize_day_bounds(tz, start_local_day)
-        if end_local_day != start_local_day:
-            _, end_local_dt = _localize_day_bounds(tz, end_local_day)
-
+        start_local_dt, _ = _localize_day_bounds(tz, start_local_day)
+        _, end_local_dt = _localize_day_bounds(tz, end_local_day)
         start_utc = start_local_dt.astimezone(pytz.UTC)
         end_utc = end_local_dt.astimezone(pytz.UTC)
 
-        # --- активные подписки пользователя ---
-        members: list[ShareMember] = await uow.share_members.list_by_user(user.id)
+        # --- активные и не приглушённые подписки пользователя ---
+        members: List[ShareMember] = await uow.share_members.list_by_user(user.id)
         members = [
             m for m in (members or [])
             if getattr(m, "status", None) == ShareMemberStatus.ACTIVE
+            and not getattr(m, "muted", False)
         ]
         if not members:
             return FeedPage(page=page, pages=total_pages, days=[])
 
-        # загрузим share_links и посчитаем эффективные права
-        effective_show_history_by_share: dict[int, bool] = {}
-        share_ids: list[int] = []
+        # --- валидные ссылки + эффективные права истории ---
+        effective_show_history_by_share: Dict[int, bool] = {}
+        effective_share_ids: List[int] = []
+
         for m in members:
             link: ShareLink | None = await uow.share_links.get(m.share_id)
             if not link:
                 continue
-            # ссылка активна и не истекла?
             if not getattr(link, "is_active", True):
                 continue
-            exp: Optional[datetime] = getattr(link, "expires_at_utc", None)
+            exp = getattr(link, "expires_at_utc", None)
             if exp is not None and exp <= now_utc:
                 continue
 
-            # эффективные права
-            can_complete = getattr(m, "can_complete_override", None)
-            if can_complete is None:
-                can_complete = bool(getattr(link, "allow_complete_default", True))
-
-            show_history = getattr(m, "show_history_override", None)
-            if show_history is None:
-                show_history = bool(getattr(link, "show_history_default", True))
-
-            # если история запрещена — пропускаем для режима hist
-            if mode == "hist" and not show_history:
+            show_history = (
+                m.show_history_override
+                if m.show_history_override is not None
+                else bool(getattr(link, "show_history_default", True))
+            )
+            if mode_str == "hist" and not show_history:
                 continue
 
-            share_ids.append(link.id)
+            effective_share_ids.append(link.id)
             effective_show_history_by_share[link.id] = bool(show_history)
 
-        if not share_ids:
+        if not effective_share_ids:
             return FeedPage(page=page, pages=total_pages, days=[])
 
-        # schedules из подписок
-        try:
-            link_schedules = await uow.share_link_schedules.list_by_shares(share_ids)
-        except AttributeError:
-            # fallback на поштучную выборку
-            link_schedules = []
-            for sid in share_ids:
-                part = await uow.share_link_schedules.list_by_share(sid)
-                link_schedules.extend(part or [])
+        # --- schedules, доступные через эти ссылки ---
+        link_schedules: List = []
+        for sid in effective_share_ids:
+            part = await uow.share_links.list_by_share(sid)
+            if part:
+                link_schedules.extend(part)
 
         sched_ids = list({ls.schedule_id for ls in link_schedules})
         if not sched_ids:
             return FeedPage(page=page, pages=total_pages, days=[])
 
+        # --- сами расписания (фильтруем активные и по action) ---
         schedules: List[Schedule] = await uow.schedules.list_by_ids(sched_ids)
         if action is not None:
             schedules = [s for s in schedules if s.action == action]
+        schedules = [s for s in schedules if getattr(s, "active", True)]
         if not schedules:
             return FeedPage(page=page, pages=total_pages, days=[])
 
-        # последний факт выполнения по расписаниям (как в get_feed)
-        last_by_schedule: Dict[int, tuple[Optional[datetime], Optional[ActionSource]]] = {}
+        plant_ids = {s.plant_id for s in schedules}
+        plant_name_cache: Dict[int, str] = {}
+        if plant_ids:
+            plants: List[Plant] = await uow.plants.list_by_ids(list(plant_ids))
+            plant_name_cache = {
+                p.id: (getattr(p, "name", None) or f"#{getattr(p, 'id', 0)}")
+                for p in (plants or [])
+            }
+
+        last_by_schedule: Dict[int, tuple[datetime | None, ActionSource | None]] = {}
         for s in schedules:
             last_by_schedule[s.id] = await uow.action_logs.last_effective_done(s.id)
 
         items: List[FeedItem] = []
+        share_ids_by_sched: Dict[int, List[int]] = {}
+        for ls in link_schedules:
+            share_ids_by_sched.setdefault(ls.schedule_id, []).append(ls.share_id)
 
-        # для ускорения кешируем названия растений
-        plant_name_cache: dict[int, str] = {}
+        max_steps_per_schedule = max(8 * days_per_page, days_per_page + 3)
 
         for s in schedules:
-            share_ids_for_sched = [ls.share_id for ls in link_schedules if ls.schedule_id == s.id]
-            if mode == "hist" and not any(effective_show_history_by_share.get(sh, False) for sh in share_ids_for_sched):
-                continue
+            if mode_str == "hist":
+                if not any(
+                    effective_show_history_by_share.get(sh, False)
+                    for sh in share_ids_by_sched.get(s.id, [])
+                ):
+                    continue
 
-            # базовые переменные для генерации последовательности
             base_now: datetime = start_utc - timedelta(seconds=1)
-            cursor: Optional[datetime] = None
+            cursor: datetime | None = None
             last_dt_utc, last_src = last_by_schedule.get(s.id, (None, None))
 
-            # plant name
-            if s.plant_id in plant_name_cache:
-                plant_name = plant_name_cache[s.plant_id]
-            else:
-                p: Plant | None = await uow.plants.get(s.plant_id)
-                plant_name = getattr(p, "name", None) or f"#{getattr(p, 'id', 0)}"
-                plant_name_cache[s.plant_id] = plant_name
+            plant_name = plant_name_cache.get(s.plant_id, f"#{getattr(s, 'plant_id', 0)}")
 
-            # генерим наступления, пока попадают в окно
-            for _ in range(days_per_page * 8):
+            for _ in range(max_steps_per_schedule):
                 last_anchor = last_dt_utc if cursor is None else cursor
 
                 if s.type == ScheduleType.INTERVAL:
@@ -353,10 +373,8 @@ async def get_feed_subs(
                 cursor = nxt
                 base_now = nxt
                 if s.type != ScheduleType.INTERVAL:
-                    # после первого срабатывания якорим источник как SCHEDULE
                     last_src = ActionSource.SCHEDULE
 
-        # группируем по дням
         by_day: Dict[date, List[FeedItem]] = {}
         for it in items:
             d = it.dt_local.date()

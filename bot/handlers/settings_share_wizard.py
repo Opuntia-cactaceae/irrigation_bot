@@ -412,7 +412,7 @@ async def on_wz_create(cb: types.CallbackQuery, state: FSMContext):
             await cb.answer("Не удалось сгенерировать код, попробуйте ещё раз", show_alert=True)
             return
 
-        await uow.share_link_schedules.bulk_add(link.id, selected)
+        await uow.share_links.bulk_add(link.id, selected)
 
 
     kb = InlineKeyboardBuilder()
