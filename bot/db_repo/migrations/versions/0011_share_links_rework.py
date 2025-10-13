@@ -1,5 +1,5 @@
 """
-Share Links: replace schedule shares/subscriptions with share links and members (idempotent).
+Share Links: replace schedule shares/subscriptions with share links and members (idempotent, with pre-drop).
 
 Revision ID: 0011_share_links
 Revises: 0010_users_pk_is_tg_id
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-# revision identifiers, used by Alembic.
+
 revision = "0011_share_links"
 down_revision = "0010_users_pk_is_tg_id"
 branch_labels = None
@@ -37,13 +37,6 @@ def _has_index(conn, index_name: str) -> bool:
         SELECT 1 FROM pg_indexes WHERE indexname = :n
     """), {"n": index_name}).fetchone())
 
-def _has_constraint(conn, table: str, constraint_name: str) -> bool:
-    return bool(conn.execute(sa.text("""
-        SELECT 1
-        FROM information_schema.table_constraints
-        WHERE table_name = :t AND constraint_name = :n
-    """), {"t": table, "n": constraint_name}).fetchone())
-
 def _fk_exists(conn, table: str, fk_name: str) -> bool:
     return bool(conn.execute(sa.text("""
         SELECT 1
@@ -56,6 +49,16 @@ def _fk_exists(conn, table: str, fk_name: str) -> bool:
 
 def upgrade():
     bind = op.get_bind()
+
+    # 0) Pre-drop: если предыдущий прогон создал что-то частично — убираем это, чтобы чисто пересоздать
+    #    сначала FK из action_logs на новые таблицы (если есть), потом дочерние, потом родителя.
+    op.execute("ALTER TABLE IF EXISTS action_logs DROP CONSTRAINT IF EXISTS action_logs_share_id_fkey")
+    op.execute("ALTER TABLE IF EXISTS action_logs DROP CONSTRAINT IF EXISTS action_logs_share_member_id_fkey")
+    # дочерние
+    op.execute("DROP TABLE IF EXISTS share_link_schedules CASCADE")
+    op.execute("DROP TABLE IF EXISTS share_members CASCADE")
+    # родитель
+    op.execute("DROP TABLE IF EXISTS share_links CASCADE")
 
     # 1) ActionSource: идемпотентно добавляем 'SHARED'
     with op.get_context().autocommit_block():
@@ -89,14 +92,14 @@ def upgrade():
         $$;
         """)
 
-    # Объект enum для использования в колонках без автосоздания
+    # enum-объект для использования в колонке, без автосоздания типа при create_table
     share_member_status_enum = postgresql.ENUM(
         'PENDING', 'ACTIVE', 'REMOVED', 'BLOCKED',
         name='sharememberstatus',
         create_type=False,
     )
 
-    # 3) share_links (replaces schedule_shares)
+    # 3) share_links (родитель)
     if not _has_table(bind, "share_links"):
         op.create_table(
             "share_links",
@@ -120,11 +123,10 @@ def upgrade():
                       nullable=False, server_default=sa.text("0")),
             sa.UniqueConstraint("code", name="uq_share_links_code"),
         )
-    # индексы (если вдруг таблица уже была)
     if not _has_index(bind, "ix_share_links_owner_user_id"):
         op.create_index("ix_share_links_owner_user_id", "share_links", ["owner_user_id"], unique=False)
 
-    # 4) share_link_schedules (association between share_links and schedules)
+    # 4) share_link_schedules (дочерняя к share_links/schedules)
     if not _has_table(bind, "share_link_schedules"):
         op.create_table(
             "share_link_schedules",
@@ -140,7 +142,7 @@ def upgrade():
     if not _has_index(bind, "ix_share_link_schedules_schedule_id"):
         op.create_index("ix_share_link_schedules_schedule_id", "share_link_schedules", ["schedule_id"], unique=False)
 
-    # 5) share_members (replaces schedule_subscriptions)
+    # 5) share_members (дочерняя к share_links/users)
     if not _has_table(bind, "share_members"):
         op.create_table(
             "share_members",
@@ -164,7 +166,7 @@ def upgrade():
     if not _has_index(bind, "ix_share_members_subscriber_user_id"):
         op.create_index("ix_share_members_subscriber_user_id", "share_members", ["subscriber_user_id"], unique=False)
 
-    # 6) action_logs: новые колонки + индексы + FK (всё с проверками)
+    # 6) action_logs: добавить колонки, индексы, FK (если их нет)
     if not _has_column(bind, "action_logs", "share_id"):
         op.add_column("action_logs", sa.Column("share_id", sa.Integer(), nullable=True))
     if not _has_column(bind, "action_logs", "share_member_id"):
@@ -186,7 +188,7 @@ def upgrade():
             ["share_member_id"], ["id"], ondelete="SET NULL"
         )
 
-    # 7) Drop legacy tables (без ошибок, если их уже нет)
+    # 7) Drop legacy tables (старые), если ещё не удалены
     op.execute("DROP TABLE IF EXISTS schedule_subscriptions CASCADE")
     op.execute("DROP TABLE IF EXISTS schedule_shares CASCADE")
 
