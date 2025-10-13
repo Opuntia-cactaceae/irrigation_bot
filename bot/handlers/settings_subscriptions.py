@@ -112,60 +112,104 @@ except Exception:
 
 @settings_router.callback_query(F.data == f"{PREFIX}:subs_enter_code")
 async def on_subs_enter_code_start(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     await state.set_state(SettingsStates.waiting_sub_code)
-    await cb.message.edit_text(
+    prompt = await cb.message.answer(
         "Введите код подписки (без пробелов, регистр не важен):",
         reply_markup=kb_enter_code(),
     )
+    await state.update_data(prompt_msg_id=prompt.message_id, prompt_chat_id=prompt.chat.id)
     await cb.answer()
 
 
 @settings_router.callback_query(F.data == f"{PREFIX}:subs_enter_cancel")
 async def on_subs_enter_code_cancel(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     await state.clear()
-    await on_subs_menu(cb)
-    await cb.answer("Отменено")
+    await cb.message.answer("Отменено. Возвращаю в настройки.", reply_markup=kb_settings_menu())
+    await cb.answer()
 
 
 @settings_router.message(SettingsStates.waiting_sub_code)
 async def on_subs_enter_code_message(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    prompt_chat_id = data.get("prompt_chat_id") or msg.chat.id
+
     code = (msg.text or "").strip().replace(" ", "").upper()
     if not code:
-        await msg.answer("Пустой код. Пришлите строку с кодом или нажмите «Отмена».", reply_markup=kb_enter_code())
+        await msg.answer("Пустой код. Пришлите строку с кодом или нажмите «Отмена».")
         return
 
     user_id = msg.from_user.id
-    async with new_uow() as uow:
-        # активный линк по коду
-        link = await uow.share_links.get_by_code_active(code, now_utc=datetime.now(timezone.utc))
-        if not link:
-            await msg.answer("Код не найден, истёк или исчерпан. Проверьте правильность и попробуйте ещё раз.", reply_markup=kb_enter_code())
-            return
+    ok = False
+    already = False
+    err_text = None
 
-        # уже есть членство?
-        member = await uow.share_members.find(share_id=link.id, subscriber_user_id=user_id)
+    try:
+        async with new_uow() as uow:
+            link = await uow.share_links.get_by_code_active(code, now_utc=datetime.now(timezone.utc))
+            if not link:
+                err_text = "❌ Код не найден, истёк или исчерпан."
+            else:
+                member = await uow.share_members.find(share_id=link.id, subscriber_user_id=user_id)
+                if member and member.status == ShareMemberStatus.ACTIVE:
+                    already = True
+                else:
+                    if member:
+                        await uow.share_members.set_status(member_id=member.id, status=ShareMemberStatus.ACTIVE)
+                    else:
+                        await uow.share_members.create(share_id=link.id, subscriber_user_id=user_id)
 
-        if member and member.status == ShareMemberStatus.ACTIVE:
-            await state.clear()
-            await msg.answer("Вы уже подписаны по этому коду. Открою список подписок…")
-            fake_cb = types.CallbackQuery(id="0", from_user=msg.from_user, chat_instance="", message=msg, data=f"{PREFIX}:subs_list:1")
-            await on_subs_list(fake_cb)
-            return
+                    await uow.share_links.increment_uses(link.id)
+                    await uow.commit()
+                    ok = True
+    except Exception:
+        err_text = "⚠️ Не удалось обработать код. Попробуйте ещё раз."
 
-        # создаём/активируем
-        if member:
-            await uow.share_members.set_status(member_id=member.id, status=ShareMemberStatus.ACTIVE)
-        else:
-            await uow.share_members.create(share_id=link.id, subscriber_user_id=user_id)
+    try:
+        if prompt_msg_id:
+            if ok:
+                new_text = "✅ Подписка оформлена!"
+            elif already:
+                new_text = "ℹ️ Вы уже подписаны по этому коду."
+            else:
+                new_text = err_text or "❌ Код отклонён."
 
-        # учитываем использование кода (max_uses)
-        await uow.share_links.increment_uses(link.id)
-        await uow.commit()
+            await msg.bot.edit_message_text(
+                chat_id=prompt_chat_id,
+                message_id=prompt_msg_id,
+                text=new_text,
+            )
+    except Exception:
+        pass
+    finally:
+        try:
+            if prompt_msg_id:
+                await msg.bot.edit_message_reply_markup(
+                    chat_id=prompt_chat_id,
+                    message_id=prompt_msg_id,
+                    reply_markup=None,
+                )
+        except Exception:
+            pass
 
     await state.clear()
-    await msg.answer("✅ Подписка оформлена! Покажу ваши подписки…")
-    fake_cb = types.CallbackQuery(id="0", from_user=msg.from_user, chat_instance="", message=msg, data=f"{PREFIX}:subs_list:1")
-    await on_subs_list(fake_cb)
+
+    if ok:
+        await msg.answer("Готово! Открою меню настроек.", reply_markup=kb_settings_menu())
+    elif already:
+        await msg.answer("Вы уже подписаны. Открою меню настроек.", reply_markup=kb_settings_menu())
+    else:
+        await msg.answer((err_text or "Не получилось.") + "\n\nВозвращаю в меню настроек.", reply_markup=kb_settings_menu())
 
 
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:"))
@@ -202,7 +246,6 @@ async def on_subs_list(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# ---------- Просмотр конкретной подписки ----------
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_item:"))
 async def on_subs_item(cb: types.CallbackQuery):
     _, _, _, member_id_str, return_page_str = cb.data.split(":")
