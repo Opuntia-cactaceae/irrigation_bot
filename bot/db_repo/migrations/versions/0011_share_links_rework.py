@@ -17,8 +17,23 @@ depends_on = None
 
 def upgrade():
     # 1) Extend ActionSource enum type with new value 'SHARED'
+    # 1) Идемпотентно добавляем 'SHARED' в enum actionsource
     with op.get_context().autocommit_block():
-        op.execute("ALTER TYPE actionsource ADD VALUE 'SHARED'")
+        op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_type t
+                JOIN pg_enum e ON t.oid = e.enumtypid
+                WHERE t.typname = 'actionsource'
+                  AND e.enumlabel = 'SHARED'
+            ) THEN
+                ALTER TYPE actionsource ADD VALUE 'SHARED';
+            END IF;
+        END
+        $$;
+        """)
 
     # 2) Create new enum type for ShareMemberStatus
     share_member_status_enum = postgresql.ENUM('PENDING', 'ACTIVE', 'REMOVED', 'BLOCKED', name='sharememberstatus')
