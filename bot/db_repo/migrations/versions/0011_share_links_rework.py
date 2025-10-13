@@ -204,9 +204,9 @@ def table_exists(conn, table_name: str) -> bool:
     ).fetchone()
     return bool(res)
 
-
 def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
     """Поднять значение sequence до max(id) в таблице, если sequence существует."""
+    # есть ли вообще такая sequence
     seq = conn.execute(
         sa.text("""
             SELECT 1
@@ -217,6 +217,18 @@ def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
     ).fetchone()
     if not seq:
         return
+
     max_id = conn.execute(sa.text(f"SELECT COALESCE(MAX({pk}), 0) FROM {table_name}")).scalar() or 0
-    # ВАЖНО: без :s::regclass — используем to_regclass(:s); ставим на MAX(id), чтобы nextval() дал MAX(id)+1
-    conn.execute(sa.text("SELECT setval(to_regclass(:s), :v)"), {"s": seq_name, "v": max_id})
+
+    if max_id <= 0:
+        # таблица пустая — следующий nextval() должен дать 1
+        conn.execute(
+            sa.text("SELECT setval(to_regclass(:s), 1, FALSE)"),
+            {"s": seq_name},
+        )
+    else:
+        # ставим на MAX(id); следующий nextval() даст MAX(id)+1
+        conn.execute(
+            sa.text("SELECT setval(to_regclass(:s), :v, TRUE)"),
+            {"s": seq_name, "v": max_id},
+        )
