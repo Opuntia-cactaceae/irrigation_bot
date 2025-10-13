@@ -19,7 +19,6 @@ PREFIX = "cal_subs"
 PAGE_SIZE_DAYS = 5
 
 
-# ---------- public ----------
 async def show_calendar_subs_root(
     target: types.Message | types.CallbackQuery,
     *,
@@ -27,7 +26,6 @@ async def show_calendar_subs_root(
     mode: Mode = "upc",
     action: Optional[ActionType] = None,
 ):
-    """Календарь событий, приходящих из ПОДПИСОК (share_*)."""
     if isinstance(target, types.CallbackQuery):
         message = target.message
         user_id = target.from_user.id
@@ -54,8 +52,6 @@ async def show_calendar_subs_root(
     else:
         await message.answer(text, reply_markup=kb)
 
-
-# ---------- rendering ----------
 def _render_header(mode: Mode, action: Optional[ActionType]) -> str:
     act_label = {
         None: "Все действия",
@@ -89,10 +85,10 @@ def _render_feed_text(feed_page) -> str:
 
 def _kb_calendar_subs(mode: Mode, page: int, pages: int, action: Optional[ActionType]):
     kb = InlineKeyboardBuilder()
+    code_current = ACT_TO_CODE.get(action, "all")
 
-    # фильтр по типу действия
     for text, code in (("💧", "w"), ("💊", "f"), ("🪴", "r"), ("👀", "all")):
-        active = (ACT_TO_CODE.get(action) == code)
+        active = (code_current == code)
         mark = "✓ " if active and code != "all" else ""
         kb.button(
             text=f"{mark}{text}",
@@ -100,19 +96,17 @@ def _kb_calendar_subs(mode: Mode, page: int, pages: int, action: Optional[Action
         )
     kb.adjust(4)
 
-    # переключение раздела
     kb.row(
         types.InlineKeyboardButton(
             text=("📌 Ближайшие ✓" if mode == "upc" else "📌 Ближайшие"),
-            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}",
+            callback_data=f"{PREFIX}:feed:upc:1:{code_current}",
         ),
         types.InlineKeyboardButton(
             text=("📜 История ✓" if mode == "hist" else "📜 История"),
-            callback_data=f"{PREFIX}:feed:hist:1:{ACT_TO_CODE.get(action)}",
+            callback_data=f"{PREFIX}:feed:hist:1:{code_current}",
         ),
     )
 
-    # пагинация
     has_prev = page > 1
     has_next = page < pages
     prev_page = page - 1 if has_prev else 1
@@ -121,19 +115,18 @@ def _kb_calendar_subs(mode: Mode, page: int, pages: int, action: Optional[Action
     kb.row(
         types.InlineKeyboardButton(
             text="◀️" if has_prev else "⏺",
-            callback_data=f"{PREFIX}:page:{mode}:{prev_page}:{ACT_TO_CODE.get(action)}",
+            callback_data=f"{PREFIX}:page:{mode}:{prev_page}:{code_current}",
         ),
         types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
             text="▶️" if has_next else "⏺",
-            callback_data=f"{PREFIX}:page:{mode}:{next_page}:{ACT_TO_CODE.get(action)}",
+            callback_data=f"{PREFIX}:page:{mode}:{next_page}:{code_current}",
         ),
     )
     kb.row(types.InlineKeyboardButton(text="↩️ Подписки", callback_data="settings:subs"))
     return kb.as_markup()
 
 
-# ---------- router callbacks ----------
 @calendar_subs_router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_calendar_subs_cb(cb: types.CallbackQuery):
     parts = cb.data.split(":")
@@ -145,6 +138,8 @@ async def on_calendar_subs_cb(cb: types.CallbackQuery):
         mode: Mode = parts[2] if len(parts) > 2 else "upc"
         page = int(parts[3]) if len(parts) > 3 else 1
         act_code = parts[4] if len(parts) > 4 else "all"
+        if not act_code or act_code == "None":
+            act_code = "all"  # нормализуем вход
         action = ACT_MAP.get(act_code)
         await show_calendar_subs_root(cb, page=page, mode=mode, action=action)
         return

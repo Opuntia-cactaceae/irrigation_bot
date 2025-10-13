@@ -22,7 +22,7 @@ def kb_settings_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="🔗 Ввести код", callback_data=f"{PREFIX}:subs_enter_code")
     kb.button(text="📋 Мои подписки", callback_data=f"{PREFIX}:subs_list:1")
-    kb.button(text="🗓 Календарь подписок", callback_data="settings:subs_cal")
+    kb.button(text="🗓 Календарь подписок", callback_data="settings:cal_subs")
     kb.button(text="↩️ Назад", callback_data=f"{PREFIX}:menu")
     kb.adjust(1)
     return kb.as_markup()
@@ -212,6 +212,16 @@ async def on_subs_enter_code_message(msg: types.Message, state: FSMContext):
         await msg.answer((err_text or "Не получилось.") + "\n\nВозвращаю в меню настроек.", reply_markup=kb_settings_menu())
 
 
+def _status_label(status) -> str:
+    name = getattr(status, "name", str(status))
+    labels = {
+        "ACTIVE": "🟢 активна",
+        "REMOVED": "⚪️ отключена",
+        "SUSPENDED": "🟠 приостановлена",
+        "BLOCKED": "🔴 заблокирована",
+    }
+    return labels.get(name, str(status))
+
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:"))
 async def on_subs_list(cb: types.CallbackQuery):
     try:
@@ -232,14 +242,12 @@ async def on_subs_list(cb: types.CallbackQuery):
         await cb.answer()
         return
 
-    # подтягиваем заголовки ссылок
     async with new_uow() as uow:
         titles: List[str] = []
         for m in items:
             share = await uow.share_links.get(m.share_id)
             title = getattr(share, "title", None) or f"Подписка #{m.id}"
-            status = getattr(m, "status", "UNKNOWN")
-            titles.append(f"• <b>{title}</b> — {status}")
+            titles.append(f"• <b>{title}</b> — {_status_label(getattr(m, 'status', None))}")
 
     text = "📋 <b>Мои подписки</b>:\n\n" + "\n".join(titles)
     await cb.message.edit_text(text, reply_markup=kb_subs_list_page([m.id for m in items], page, pages))
@@ -248,9 +256,9 @@ async def on_subs_list(cb: types.CallbackQuery):
 
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_item:"))
 async def on_subs_item(cb: types.CallbackQuery):
-    _, _, _, member_id_str, return_page_str = cb.data.split(":")
-    member_id = int(member_id_str)
-    return_page = int(return_page_str)
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
 
     async with new_uow() as uow:
         m = await uow.share_members.get_with_relations(member_id)
@@ -274,12 +282,11 @@ async def on_subs_item(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# ---------- Подтверждение отписки ----------
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_unsub_confirm:"))
 async def on_subs_unsub_confirm(cb: types.CallbackQuery):
-    _, _, _, member_id_str, return_page_str = cb.data.split(":")
-    member_id = int(member_id_str)
-    return_page = int(return_page_str)
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
 
     async with new_uow() as uow:
         m = await uow.share_members.get_with_relations(member_id)
@@ -294,12 +301,11 @@ async def on_subs_unsub_confirm(cb: types.CallbackQuery):
     await cb.answer()
 
 
-# ---------- Отписка ----------
 @settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_unsub:"))
 async def on_subs_unsub(cb: types.CallbackQuery):
-    _, _, _, member_id_str, return_page_str = cb.data.split(":")
-    member_id = int(member_id_str)
-    return_page = int(return_page_str)
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
 
     async with new_uow() as uow:
         m = await uow.share_members.get(member_id)
