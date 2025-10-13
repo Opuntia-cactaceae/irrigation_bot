@@ -161,92 +161,113 @@ class ActionStatus(enum.Enum):
 class ActionSource(enum.Enum):
     SCHEDULE = "SCHEDULE"
     MANUAL = "MANUAL"
+    SHARED = "SHARED"
 
+
+class ShareMemberStatus(enum.Enum):
+    PENDING = "PENDING"
+    ACTIVE = "ACTIVE"
+    REMOVED = "REMOVED"
+    BLOCKED = "BLOCKED"
+
+class ShareLink(Base):
+    __tablename__ = "share_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    owner: Mapped["User"] = relationship()
+
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    title: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    allow_complete_default: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_history_default: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    expires_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    max_uses: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    uses_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    schedules: Mapped[list["ShareLinkSchedule"]] = relationship(
+        back_populates="share", cascade="all, delete-orphan"
+    )
+    members: Mapped[list["ShareMember"]] = relationship(
+        back_populates="share", cascade="all, delete-orphan"
+    )
+
+
+class ShareLinkSchedule(Base):
+    __tablename__ = "share_link_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    share_id: Mapped[int] = mapped_column(ForeignKey("share_links.id", ondelete="CASCADE"), index=True)
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id", ondelete="CASCADE"), index=True)
+
+    __table_args__ = (UniqueConstraint("share_id", "schedule_id", name="uq_share_schedule"),)
+
+    share: Mapped["ShareLink"] = relationship(back_populates="schedules")
+    schedule: Mapped["Schedule"] = relationship()
+
+
+class ShareMember(Base):
+    __tablename__ = "share_members"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    share_id: Mapped[int] = mapped_column(ForeignKey("share_links.id", ondelete="CASCADE"), index=True)
+    share: Mapped["ShareLink"] = relationship(back_populates="members")
+
+    subscriber_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    subscriber: Mapped["User"] = relationship()
+
+    status: Mapped[ShareMemberStatus] = mapped_column(
+        Enum(ShareMemberStatus, name="sharememberstatus"), default=ShareMemberStatus.ACTIVE, nullable=False
+    )
+
+    can_complete_override: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    show_history_override: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    joined_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    removed_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("share_id", "subscriber_user_id", name="uq_share_member"),)
 
 
 class ActionLog(Base):
-    """
-    История действий (полив/удобрение/пересадка) — живёт отдельно от растений и расписаний.
-    """
     __tablename__ = "action_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
 
     plant_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("plants.id", ondelete="SET NULL"),
-        index=True,
-        nullable=True,
+        ForeignKey("plants.id", ondelete="SET NULL"), index=True, nullable=True
     )
     schedule_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("schedules.id", ondelete="SET NULL"),
-        index=True,
-        nullable=True,
+        ForeignKey("schedules.id", ondelete="SET NULL"), index=True, nullable=True
     )
 
     action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
     status: Mapped[ActionStatus] = mapped_column(Enum(ActionStatus), nullable=False)
     source: Mapped[ActionSource] = mapped_column(Enum(ActionSource), nullable=False, default=ActionSource.SCHEDULE)
 
-    done_at_utc: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+    share_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("share_links.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+    share_member_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("share_members.id", ondelete="SET NULL"), index=True, nullable=True
     )
 
+    done_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     plant_name_at_time: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-
-
-class ScheduleShare(Base):
-    __tablename__ = "schedule_shares"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-
-    owner_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
-
-    schedule_id: Mapped[int] = mapped_column(
-        ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-
-    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    note: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-
-    created_at_utc: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    expires_at_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    allow_complete_by_subscribers: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    schedule: Mapped["Schedule"] = relationship()
-    owner: Mapped["User"] = relationship()
-
-
-class ScheduleSubscription(Base):
-    __tablename__ = "schedule_subscriptions"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-
-    schedule_id: Mapped[int] = mapped_column(
-        ForeignKey("schedules.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    subscriber_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
-
-    can_complete: Mapped[bool] = mapped_column(Boolean, default=True)
-    muted: Mapped[bool] = mapped_column(Boolean, default=False)
-
-    accepted_at_utc: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    __table_args__ = (
-        UniqueConstraint("schedule_id", "subscriber_user_id", name="uq_schedule_subscriber"),
-    )
-
-    schedule: Mapped["Schedule"] = relationship()
-    subscriber: Mapped["User"] = relationship()
+    share: Mapped[Optional["ShareLink"]] = relationship()
+    share_member: Mapped[Optional["ShareMember"]] = relationship()
