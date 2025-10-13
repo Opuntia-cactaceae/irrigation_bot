@@ -146,3 +146,8 @@ async def on_calendar_subs_cb(cb: types.CallbackQuery):
         return
 
     await cb.answer()
+
+@calendar_subs_router.callback_query(F.data == "settings:subs_cal")
+async def cal_entry_from_settings(cb: types.CallbackQuery):
+    await show_calendar_subs_root(cb, page=1, mode="upc", action=None)
+    await cb.answer()

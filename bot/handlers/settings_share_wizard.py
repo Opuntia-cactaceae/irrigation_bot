@@ -429,3 +429,4 @@ async def on_wz_create(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer("Код готов")
+
