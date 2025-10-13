@@ -23,9 +23,9 @@ SHAREMEMBERSTATUS_TYPE = "sharememberstatus"   # имя PG ENUM для ShareMemb
 def upgrade():
     conn = op.get_bind()
 
-    # 0) Добавить значение 'SHARED' в ENUM actionsource (если ещё нет)
-    # В DO $$ ... $$ нельзя использовать bind-параметры под asyncpg — подставляем литералы.
-    conn.execute(sa.text(f"""
+    # 0) Добавить значение 'SHARED' в ENUM actionsource (идемпотентно)
+    # В DO $$ ... $$ нельзя использовать bind-параметры под asyncpg — подставляем литералы сразу.
+    op.execute(f"""
         DO $$
         BEGIN
             IF NOT EXISTS (
@@ -37,18 +37,18 @@ def upgrade():
                 ALTER TYPE {ACTIONSOURCE_TYPE} ADD VALUE 'SHARED';
             END IF;
         END$$;
-    """))
+    """)
 
     # 1) Новый ENUM sharememberstatus (идемпотентно)
     op.execute(f"""
-    DO $$
-    BEGIN
-        IF NOT EXISTS (
-            SELECT 1 FROM pg_type t WHERE t.typname = '{SHAREMEMBERSTATUS_TYPE}'
-        ) THEN
-            CREATE TYPE {SHAREMEMBERSTATUS_TYPE} AS ENUM ('PENDING','ACTIVE','REMOVED','BLOCKED');
-        END IF;
-    END$$;
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_type t WHERE t.typname = '{SHAREMEMBERSTATUS_TYPE}'
+            ) THEN
+                CREATE TYPE {SHAREMEMBERSTATUS_TYPE} AS ENUM ('PENDING','ACTIVE','REMOVED','BLOCKED');
+            END IF;
+        END$$;
     """)
 
     # 2) Новые таблицы
@@ -62,14 +62,14 @@ def upgrade():
         sa.Column("allow_complete_default", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("show_history_default", sa.Boolean(), nullable=False, server_default=sa.text("true")),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("created_at_utc", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        # timestamptz + явный UTC
+        sa.Column("created_at_utc", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("timezone('UTC', now())")),
         sa.Column("expires_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.Column("max_uses", sa.Integer(), nullable=True),
         sa.Column("uses_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
     )
     op.create_index("ix_share_links_owner_user_id", "share_links", ["owner_user_id"])
-    # ВАЖНО: отдельный индекс по code не нужен — есть unique-индекс
-    # op.create_index("ix_share_links_code", "share_links", ["code"])
+    # отдельный индекс по code не нужен — есть unique
 
     op.create_table(
         "share_link_schedules",
@@ -88,7 +88,6 @@ def upgrade():
         sa.Column("subscriber_user_id", sa.BigInteger(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
         sa.Column(
             "status",
-            # используем PG-диалект и НЕ создаём тип заново (мы уже создали DDL-ом выше)
             psql.ENUM("PENDING", "ACTIVE", "REMOVED", "BLOCKED",
                       name=SHAREMEMBERSTATUS_TYPE, create_type=False),
             nullable=False,
@@ -97,7 +96,7 @@ def upgrade():
         sa.Column("can_complete_override", sa.Boolean(), nullable=True),
         sa.Column("show_history_override", sa.Boolean(), nullable=True),
         sa.Column("muted", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("joined_at_utc", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("joined_at_utc", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("timezone('UTC', now())")),
         sa.Column("removed_at_utc", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("share_id", "subscriber_user_id", name="uq_share_member"),
     )
@@ -139,7 +138,7 @@ def upgrade():
             INSERT INTO share_link_schedules (share_id, schedule_id)
             SELECT ss.id AS share_id, ss.schedule_id
             FROM schedule_shares ss
-            ON CONFLICT DO NOTHING
+            ON CONFLICT ON CONSTRAINT uq_share_schedule DO NOTHING
         """)
 
         if table_exists(conn, "schedule_subscriptions"):
@@ -159,21 +158,31 @@ def upgrade():
                     NULL
                 FROM schedule_subscriptions ssub
                 JOIN schedule_shares ss ON ss.schedule_id = ssub.schedule_id
-                ON CONFLICT (share_id, subscriber_user_id) DO NOTHING
+                ON CONFLICT ON CONSTRAINT uq_share_member DO NOTHING
             """)
 
         bump_seq(conn, "share_links_id_seq", "share_links")
         bump_seq(conn, "share_link_schedules_id_seq", "share_link_schedules")
         bump_seq(conn, "share_members_id_seq", "share_members")
 
-    # 5) Сносим старые таблицы
+    # 5) Сносим старые таблицы (если есть)
     if table_exists(conn, "schedule_subscriptions"):
-        op.drop_constraint("schedule_subscriptions_subscriber_user_id_fkey", "schedule_subscriptions", type_="foreignkey")
-        op.drop_constraint("uq_schedule_subscriber", "schedule_subscriptions", type_="unique")
+        # Снять явные ограничения, чтобы Drop прошёл на всех БД одинаково
+        try:
+            op.drop_constraint("schedule_subscriptions_subscriber_user_id_fkey", "schedule_subscriptions", type_="foreignkey")
+        except Exception:
+            pass
+        try:
+            op.drop_constraint("uq_schedule_subscriber", "schedule_subscriptions", type_="unique")
+        except Exception:
+            pass
         op.drop_table("schedule_subscriptions")
 
     if table_exists(conn, "schedule_shares"):
-        op.drop_constraint("schedule_shares_owner_user_id_fkey", "schedule_shares", type_="foreignkey")
+        try:
+            op.drop_constraint("schedule_shares_owner_user_id_fkey", "schedule_shares", type_="foreignkey")
+        except Exception:
+            pass
         op.drop_table("schedule_shares")
 
 
@@ -195,6 +204,7 @@ def table_exists(conn, table_name: str) -> bool:
     ).fetchone()
     return bool(res)
 
+
 def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
     """Поднять значение sequence до max(id) в таблице, если sequence существует."""
     seq = conn.execute(
@@ -208,5 +218,5 @@ def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
     if not seq:
         return
     max_id = conn.execute(sa.text(f"SELECT COALESCE(MAX({pk}), 0) FROM {table_name}")).scalar() or 0
-    # важная правка: приводим к regclass
-    conn.execute(sa.text("SELECT setval(:s::regclass, :v)"), {"s": seq_name, "v": max_id + 1})
+    # ВАЖНО: без :s::regclass — используем to_regclass(:s); ставим на MAX(id), чтобы nextval() дал MAX(id)+1
+    conn.execute(sa.text("SELECT setval(to_regclass(:s), :v)"), {"s": seq_name, "v": max_id})
