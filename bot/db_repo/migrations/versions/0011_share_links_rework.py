@@ -15,15 +15,15 @@ branch_labels = None
 depends_on = None
 
 # --- config ---
-ACTIONSOURCE_TYPE = "actionsource"        # имя PG ENUM для ActionSource
-SHAREMEMBERSTATUS_TYPE = "sharememberstatus"  # новое имя PG ENUM для ShareMember.status
+ACTIONSOURCE_TYPE = "actionsource"             # имя PG ENUM для ActionSource
+SHAREMEMBERSTATUS_TYPE = "sharememberstatus"   # имя PG ENUM для ShareMember.status
 
 
 def upgrade():
     conn = op.get_bind()
 
     # 0) Добавить значение 'SHARED' в ENUM actionsource (если ещё нет)
-    op.execute(
+    conn.execute(
         sa.text(f"""
         DO $$
         BEGIN
@@ -73,7 +73,13 @@ def upgrade():
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("share_id", sa.Integer(), sa.ForeignKey("share_links.id", ondelete="CASCADE"), index=True, nullable=False),
         sa.Column("subscriber_user_id", sa.BigInteger(), sa.ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False),
-        sa.Column("status", sa.Enum(name=SHAREMEMBERSTATUS_TYPE), nullable=False, server_default="ACTIVE"),
+        # важно: server_default как enum literal с явным кастом
+        sa.Column(
+            "status",
+            sa.Enum(name=SHAREMEMBERSTATUS_TYPE),
+            nullable=False,
+            server_default=sa.text("'ACTIVE'::sharememberstatus"),
+        ),
         sa.Column("can_complete_override", sa.Boolean(), nullable=True),
         sa.Column("show_history_override", sa.Boolean(), nullable=True),
         sa.Column("muted", sa.Boolean(), nullable=False, server_default=sa.text("false")),
@@ -97,18 +103,6 @@ def upgrade():
     )
 
     # 4) Перенос данных из старых таблиц (если они существуют)
-    # Старые таблицы:
-    # - schedule_shares(id, owner_user_id, schedule_id, code, note, created_at_utc, expires_at_utc, is_active, allow_complete_by_subscribers)
-    # - schedule_subscriptions(id, schedule_id, subscriber_user_id, can_complete, muted, accepted_at_utc, uq(schedule_id, subscriber_user_id))
-    #
-    # Маппинг:
-    #   schedule_shares → share_links (1:1), title=NULL, allow_complete_default = allow_complete_by_subscribers,
-    #                     show_history_default=TRUE, uses_count=0, max_uses=NULL
-    #   schedule_shares(schedule_id) → share_link_schedules(share_id=share_links.id, schedule_id)
-    #   schedule_subscriptions → share_members через join по schedule_id к share_links,
-    #                     status=ACTIVE, can_complete_override = can_complete,
-    #                     show_history_override = NULL, muted, joined_at_utc = accepted_at_utc
-    #
     if table_exists(conn, "schedule_shares"):
         op.execute("""
             INSERT INTO share_links
@@ -125,7 +119,6 @@ def upgrade():
             ON CONFLICT (id) DO NOTHING
         """)
 
-        # schedules
         op.execute("""
             INSERT INTO share_link_schedules (share_id, schedule_id)
             SELECT ss.id AS share_id, ss.schedule_id
@@ -133,9 +126,8 @@ def upgrade():
             ON CONFLICT DO NOTHING
         """)
 
-        # members
         if table_exists(conn, "schedule_subscriptions"):
-            op.execute("""
+            op.execute(f"""
                 INSERT INTO share_members
                     (share_id, subscriber_user_id, status,
                      can_complete_override, show_history_override,
@@ -143,7 +135,7 @@ def upgrade():
                 SELECT
                     ss.id AS share_id,
                     ssub.subscriber_user_id,
-                    'ACTIVE'::sharememberstatus,
+                    'ACTIVE'::{SHAREMEMBERSTATUS_TYPE},
                     ssub.can_complete,
                     NULL,
                     COALESCE(ssub.muted, FALSE),
@@ -154,12 +146,11 @@ def upgrade():
                 ON CONFLICT (share_id, subscriber_user_id) DO NOTHING
             """)
 
-        # выровнять последовательности id у новых таблиц (на случай явной вставки id)
         bump_seq(conn, "share_links_id_seq", "share_links")
         bump_seq(conn, "share_link_schedules_id_seq", "share_link_schedules")
         bump_seq(conn, "share_members_id_seq", "share_members")
 
-    # 5) Удаляем старые таблицы (если были)
+    # 5) Сносим старые таблицы
     if table_exists(conn, "schedule_subscriptions"):
         op.drop_constraint("schedule_subscriptions_subscriber_user_id_fkey", "schedule_subscriptions", type_="foreignkey")
         op.drop_constraint("uq_schedule_subscriber", "schedule_subscriptions", type_="unique")
@@ -167,12 +158,10 @@ def upgrade():
 
     if table_exists(conn, "schedule_shares"):
         op.drop_constraint("schedule_shares_owner_user_id_fkey", "schedule_shares", type_="foreignkey")
-        # FK на schedules был через index, дропа не требуется отдельно
         op.drop_table("schedule_shares")
 
 
 def downgrade():
-    # Возврат к старой схеме не поддержан (сложная обратная миграция отношений).
     raise NotImplementedError("Downgrade is not supported for 0011_share_links_rework")
 
 
@@ -190,8 +179,6 @@ def table_exists(conn, table_name: str) -> bool:
     return bool(res)
 
 def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
-    """Поднять значение sequence до max(id) в таблице, если sequence существует."""
-    # проверить, есть ли sequence
     seq = conn.execute(
         sa.text("""
             SELECT 1
@@ -203,4 +190,4 @@ def bump_seq(conn, seq_name: str, table_name: str, pk: str = "id"):
     if not seq:
         return
     max_id = conn.execute(sa.text(f"SELECT COALESCE(MAX({pk}), 0) FROM {table_name}")).scalar() or 0
-    conn.execute(sa.text(f"SELECT setval(:s, :v)"), {"s": seq_name, "v": max_id + 1})
+    conn.execute(sa.text("SELECT setval(:s, :v)"), {"s": seq_name, "v": max_id + 1})
