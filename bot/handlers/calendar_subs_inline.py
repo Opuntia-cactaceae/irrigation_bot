@@ -129,6 +129,7 @@ def _kb_calendar_subs(mode: Mode, page: int, pages: int, action: Optional[Action
 
 @calendar_subs_router.callback_query(F.data.startswith(f"{PREFIX}:"))
 async def on_calendar_subs_cb(cb: types.CallbackQuery):
+    print("in calendar_subs_cb")
     parts = cb.data.split(":")
     cmd = parts[1] if len(parts) > 1 else "noop"
     if cmd == "noop":
@@ -139,7 +140,7 @@ async def on_calendar_subs_cb(cb: types.CallbackQuery):
         page = int(parts[3]) if len(parts) > 3 else 1
         act_code = parts[4] if len(parts) > 4 else "all"
         if not act_code or act_code == "None":
-            act_code = "all"  # нормализуем вход
+            act_code = "all"
         action = ACT_MAP.get(act_code)
         await show_calendar_subs_root(cb, page=page, mode=mode, action=action)
         return
