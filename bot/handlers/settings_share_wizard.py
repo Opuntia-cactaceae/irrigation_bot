@@ -65,9 +65,9 @@ def _format_schedule_when(s: Schedule) -> str:
     return f"в {t_str}"
 
 
-def _action_emoji(action: ActionType | str) -> str:
-    val = action if isinstance(action, str) else action.value
-    return {"watering": "💧", "fertilizing": "💊", "repotting": "🪴", "custom": "🔖"}.get(val, "🔔")
+def _action_emoji(action) -> str:
+    act = ActionType.from_any(action)
+    return act.emoji() if act else "🔔"
 
 
 @settings_router.callback_query(F.data == f"{PREFIX}:share_wizard:start")
@@ -98,8 +98,8 @@ async def _collect_my_schedules(user_tg_id: int, action_filter: str) -> List[dic
                 if not getattr(s, "active", True):
                     continue
 
-                action_val = getattr(getattr(s, "action", None), "value", getattr(s, "action", None))
-                if action_filter != "all" and action_val != action_filter:
+                act = ActionType.from_any(getattr(s, "action", None))
+                if action_filter != "all" and (not act or act.code() != action_filter):
                     continue
 
                 items.append({"schedule": s, "plant": p})
@@ -152,7 +152,7 @@ async def _render_confirm(cb: types.CallbackQuery, state: FSMContext):
         s: Schedule = it["schedule"]
         p: Plant = it["plant"]
         when = _format_schedule_when(s)
-        custom = f" — {s.custom_title}" if s.action == ActionType.CUSTOM and s.custom_title else ""
+        custom = f" — {s.custom_title}" if (ActionType.from_any(s.action) == ActionType.CUSTOM and s.custom_title) else ""
         return f"{idx}. {p.name}{custom} · {when} {_action_emoji(s.action)}"
 
     for i, it in enumerate(chosen[:PREVIEW_LIMIT], start=1):
@@ -211,7 +211,7 @@ async def _render_select(cb: types.CallbackQuery, state: FSMContext, *, page: Op
             s: Schedule = it["schedule"]
             p: Plant = it["plant"]
             when = _format_schedule_when(s)
-            custom = f" — {s.custom_title}" if s.action == ActionType.CUSTOM and s.custom_title else ""
+            custom = f" — {s.custom_title}" if (ActionType.from_any(s.action) == ActionType.CUSTOM and s.custom_title) else ""
             is_on = (s.id in selected)
             chk = "☑" if is_on else "☐"
             lines.append(f"{i}. {chk} {p.name}{custom} · {when} {_action_emoji(s.action)}")

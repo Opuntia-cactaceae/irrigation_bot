@@ -94,6 +94,9 @@ class ActionType(enum.Enum):
     def list(cls) -> list["ActionType"]:
         return list(cls)
 
+    def code(self) -> str:
+        return self.name.lower()
+
     def emoji(self) -> str:
         if self is ActionType.WATERING:
             return "💧"
@@ -102,7 +105,7 @@ class ActionType(enum.Enum):
         if self is ActionType.REPOTTING:
             return "🪴"
         if self is ActionType.CUSTOM:
-            return "🪴"
+            return "🔖"
         return "•"
 
     def title_ru(self) -> str:
