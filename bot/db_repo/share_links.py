@@ -18,6 +18,14 @@ from .models import (
     Plant,
 )
 
+LOAD_RELS_FULL = (
+    selectinload(ShareLink.schedules)
+    .selectinload(ShareLinkSchedule.schedule)
+    .selectinload(Schedule.plant)
+    .selectinload(Plant.user),
+    selectinload(ShareLink.members)
+    .selectinload(ShareMember.subscriber),
+)
 
 class ShareLinksRepo(BaseRepo):
     """
@@ -58,46 +66,16 @@ class ShareLinksRepo(BaseRepo):
         )
         return await self.add(sl)
 
-    async def get(self, share_id: int) -> Optional[ShareLink]:
-        return await self.session.get(ShareLink, share_id)
-
-    async def get_with_relations(self, share_id: int) -> Optional[ShareLink]:
-        """
-        Глубокая загрузка:
-          - owner
-          - schedules -> schedule -> plant -> plant.user
-          - members -> subscriber
-        """
-        q = (
-            select(ShareLink)
-            .where(ShareLink.id == share_id)
-            .options(
-                selectinload(ShareLink.owner),
-                selectinload(ShareLink.schedules)
-                .selectinload(ShareLinkSchedule.schedule)
-                .selectinload(Schedule.plant)
-                .selectinload(Plant.user),
-                selectinload(ShareLink.members).selectinload(ShareMember.subscriber),
-            )
-        )
+    async def get(self, share_id: int, *, with_relations: bool = False) -> Optional[ShareLink]:
+        q = select(ShareLink).where(ShareLink.id == share_id)
+        if with_relations:
+            q = q.options(*LOAD_RELS_FULL)
         return (await self.session.execute(q)).scalar_one_or_none()
 
-    async def list_by_owner(self, owner_user_id: int) -> Sequence[ShareLink]:
+    async def list_by_owner(self, owner_user_id: int, *, with_relations: bool = False) -> Sequence[ShareLink]:
         q = select(ShareLink).where(ShareLink.owner_user_id == owner_user_id)
-        return (await self.session.execute(q)).scalars().all()
-
-    async def list_by_owner_with_relations(self, owner_user_id: int) -> Sequence[ShareLink]:
-        q = (
-            select(ShareLink)
-            .where(ShareLink.owner_user_id == owner_user_id)
-            .options(
-                selectinload(ShareLink.schedules)
-                .selectinload(ShareLinkSchedule.schedule)
-                .selectinload(Schedule.plant)
-                .selectinload(Plant.user),
-                selectinload(ShareLink.members).selectinload(ShareMember.subscriber),
-            )
-        )
+        if with_relations:
+            q = q.options(*LOAD_RELS_FULL)
         return (await self.session.execute(q)).scalars().all()
 
     async def delete(self, share_id: int) -> bool:
@@ -218,14 +196,17 @@ class ShareLinksRepo(BaseRepo):
         )
         return (await self.session.execute(q)).scalar_one_or_none() is not None
 
-    async def delete_pair(self, share_id: int, schedule_id: int) -> bool:
+    async def remove_pairs(self, share_id: int, schedule_ids: Iterable[int]) -> int:
+        ids = list({int(x) for x in schedule_ids})
+        if not ids:
+            return 0
         res = await self.session.execute(
             delete(ShareLinkSchedule).where(
                 ShareLinkSchedule.share_id == share_id,
-                ShareLinkSchedule.schedule_id == schedule_id,
+                ShareLinkSchedule.schedule_id.in_(ids),
             )
         )
-        return (res.rowcount or 0) > 0
+        return int(res.rowcount or 0)
 
     async def bulk_add(self, share_id: int, schedule_ids: Iterable[int]) -> int:
         """
@@ -247,32 +228,15 @@ class ShareLinksRepo(BaseRepo):
         res = await self.session.execute(stmt)
         return int(res.rowcount or 0)
 
-    async def bulk_remove(self, share_id: int, schedule_ids: Iterable[int]) -> int:
-        """
-        Пакетное удаление связей по списку schedule_id. Возвращает количество удалённых строк.
-        """
-        ids_set = set(schedule_ids)
-        if not ids_set:
-            return 0
-        res = await self.session.execute(
-            delete(ShareLinkSchedule).where(
-                ShareLinkSchedule.share_id == share_id,
-                ShareLinkSchedule.schedule_id.in_(ids_set),
-            )
-        )
-        return int(res.rowcount or 0)
-
-    async def list_schedules(self, share_id: int) -> Sequence[Schedule]:
-        """
-        Вернуть все Schedule, привязанные к ShareLink (с plant и его user).
-        """
+    async def list_schedules_for_shares(self, share_ids: Iterable[int]) -> Sequence[Schedule]:
+        ids = list({int(x) for x in share_ids})
+        if not ids:
+            return []
         q = (
             select(Schedule)
             .join(ShareLinkSchedule, ShareLinkSchedule.schedule_id == Schedule.id)
-            .where(ShareLinkSchedule.share_id == share_id)
-            .options(
-                selectinload(Schedule.plant).selectinload(Plant.user)
-            )
+            .where(ShareLinkSchedule.share_id.in_(ids))
+            .options(selectinload(Schedule.plant).selectinload(Plant.user))
         )
         return (await self.session.execute(q)).scalars().all()
 
@@ -285,4 +249,14 @@ class ShareLinksRepo(BaseRepo):
             .join(ShareLinkSchedule, ShareLinkSchedule.share_id == ShareLink.id)
             .where(ShareLinkSchedule.schedule_id == schedule_id)
         )
+        return (await self.session.execute(q)).scalars().all()
+
+    async def list_link_schedules(
+            self,
+            share_ids: Iterable[int],
+    ) -> Sequence[ShareLinkSchedule]:
+        ids = list({int(x) for x in share_ids})
+        if not ids:
+            return []
+        q = select(ShareLinkSchedule).where(ShareLinkSchedule.share_id.in_(ids))
         return (await self.session.execute(q)).scalars().all()

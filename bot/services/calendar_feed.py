@@ -280,12 +280,8 @@ async def get_feed_subs(
         if not effective_share_ids:
             return FeedPage(page=page, pages=total_pages, days=[])
 
-        # --- schedules, доступные через эти ссылки ---
-        link_schedules: List = []
-        for sid in effective_share_ids:
-            part = await uow.share_links.list_by_share(sid)
-            if part:
-                link_schedules.extend(part)
+        # --- связи share→schedule (батч вместо N вызовов) ---
+        link_schedules: List[ShareLinkSchedule] = await uow.share_links.list_link_schedules(effective_share_ids)
 
         sched_ids = list({ls.schedule_id for ls in link_schedules})
         if not sched_ids:
@@ -299,6 +295,7 @@ async def get_feed_subs(
         if not schedules:
             return FeedPage(page=page, pages=total_pages, days=[])
 
+        # --- имена растений батчем ---
         plant_ids = {s.plant_id for s in schedules}
         plant_name_cache: Dict[int, str] = {}
         if plant_ids:
@@ -308,10 +305,12 @@ async def get_feed_subs(
                 for p in (plants or [])
             }
 
+        # --- последние выполненные по расписаниям ---
         last_by_schedule: Dict[int, tuple[datetime | None, ActionSource | None]] = {}
         for s in schedules:
             last_by_schedule[s.id] = await uow.action_logs.last_effective_done(s.id)
 
+        # --- генерация фида ---
         items: List[FeedItem] = []
         share_ids_by_sched: Dict[int, List[int]] = {}
         for ls in link_schedules:
@@ -375,6 +374,7 @@ async def get_feed_subs(
                 if s.type != ScheduleType.INTERVAL:
                     last_src = ActionSource.SCHEDULE
 
+        # --- группировка по дням ---
         by_day: Dict[date, List[FeedItem]] = {}
         for it in items:
             d = it.dt_local.date()
