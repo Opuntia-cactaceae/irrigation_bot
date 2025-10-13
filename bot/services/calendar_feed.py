@@ -10,7 +10,7 @@ import pytz
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import (
     User, Plant, Schedule, ActionType, ScheduleType, ActionSource, ActionStatus,
-    ShareLink, ShareMember, ShareMemberStatus,
+    ShareLink, ShareMember, ShareMemberStatus, ShareLinkSchedule,
 )
 from .rules import next_by_interval, next_by_weekly
 
@@ -288,10 +288,7 @@ async def get_feed_subs(
             return FeedPage(page=page, pages=total_pages, days=[])
 
         # --- сами расписания (фильтруем активные и по action) ---
-        schedules: List[Schedule] = await uow.schedules.list_by_ids(sched_ids)
-        if action is not None:
-            schedules = [s for s in schedules if s.action == action]
-        schedules = [s for s in schedules if getattr(s, "active", True)]
+        schedules: List[Schedule] = await uow.schedules.list_active_by_ids(sched_ids, action)
         if not schedules:
             return FeedPage(page=page, pages=total_pages, days=[])
 
