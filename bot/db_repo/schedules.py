@@ -11,7 +11,6 @@ from .models import (
     ScheduleType,
     Plant,
     User,
-    ScheduleSubscription,
 )
 
 
