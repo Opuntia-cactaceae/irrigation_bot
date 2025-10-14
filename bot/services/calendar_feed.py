@@ -81,27 +81,58 @@ def is_history_allowed_for_schedule(schedule_id: int,
                                     show_history_by_share: dict[int, bool]) -> bool:
     return any(show_history_by_share.get(sh, False) for sh in share_ids_by_sched.get(schedule_id, []))
 
-def iter_interval_occurrences(*,
-    last_dt_utc: datetime | None,
+def iter_interval_occurrences_strict(
+    *,
+    last_dt_utc: Optional[datetime],
     interval_days: int,
-    local_t: time,
+    local_t,
     tz_name: str,
-    tz: pytz.BaseTzInfo,
+    tz,
     start_utc: datetime,
-    end_utc: datetime
+    end_utc: datetime,
+    now_utc: Optional[datetime] = None,
 ) -> Iterator[datetime]:
-    base_now = start_utc - timedelta(seconds=1)
-    first_evt_utc = next_by_interval(last_dt_utc, interval_days, local_t, tz_name, base_now)
-    if first_evt_utc > end_utc:
+    """
+    Генератор наступлений интервалов в окне [start_utc, end_utc] БЕЗ сдвига базового времени страницы.
+    База берётся так же, как в старой логике: last_dt_utc (если есть) иначе — реальный now (UTC).
+
+    Алгоритм:
+    1) Находим ближайшее НАСТУПАЮЩЕЕ (относительно "реального" now) событие по интервалу.
+    2) От него арифметически прыгаем вперёд/назад, чтобы найти первое попадание в окно.
+    3) Дальше идём шагом interval_days по локальным датам до конца окна.
+    """
+    if interval_days <= 0:
         return
-    first_date_local = first_evt_utc.astimezone(tz).date()
-    # поднять до начала окна, сохранив кратность шагу
-    if first_date_local < (start_local := start_utc.astimezone(tz).date()):
-        lag = (start_local - first_date_local).days
+
+    tz_local = tz
+    start_local_day = start_utc.astimezone(tz_local).date()
+    end_local_day = end_utc.astimezone(tz_local).date()
+
+    _now_utc = now_utc or datetime.now(pytz.UTC)
+
+    if last_dt_utc:
+        anchor_local_date = last_dt_utc.astimezone(tz_local).date()
+        first_future_date = anchor_local_date + timedelta(days=interval_days)
+        if first_future_date < _now_utc.astimezone(tz_local).date():
+            lag = (_now_utc.astimezone(tz_local).date() - first_future_date).days
+            steps = lag // interval_days + 1
+            first_future_date = first_future_date + timedelta(days=steps * interval_days)
+    else:
+        first_future_date = _now_utc.astimezone(tz_local).date() + timedelta(days=interval_days)
+
+    if first_future_date < start_local_day:
+        lag = (start_local_day - first_future_date).days
         k = (lag + interval_days - 1) // interval_days
-        first_date_local += timedelta(days=k * interval_days)
-    d = first_date_local
-    while d <= end_utc.astimezone(tz).date():
+        first_in_window_date = first_future_date + timedelta(days=k * interval_days)
+    else:
+        lag = (first_future_date - start_local_day).days
+        k_back = lag // interval_days
+        first_in_window_date = first_future_date - timedelta(days=k_back * interval_days)
+        if first_in_window_date < start_local_day:
+            first_in_window_date += timedelta(days=interval_days)
+
+    d = first_in_window_date
+    while d <= end_local_day:
         occ_local = datetime.combine(d, local_t)
         occ_utc = _utc_from_local(occ_local, tz_name)
         if occ_utc > end_utc:
@@ -222,26 +253,26 @@ async def get_feed(
                 last_dt_utc, last_src = last_by_schedule.get(s.id, (None, None))
 
                 if s.type == ScheduleType.INTERVAL:
-                    for occ_utc in iter_interval_occurrences(
-                        last_dt_utc=last_dt_utc,
-                        interval_days=s.interval_days,
-                        local_t=s.local_time,
-                        tz_name=tz_name,
-                        tz=tz,
-                        start_utc=start_utc,
-                        end_utc=end_utc,
+                    for occ_utc in iter_interval_occurrences_strict(
+                            last_dt_utc=last_dt_utc,
+                            interval_days=s.interval_days,
+                            local_t=s.local_time,
+                            tz_name=tz_name,
+                            tz=tz,
+                            start_utc=start_utc,
+                            end_utc=end_utc,
                     ):
                         items.append(make_feed_item(occ_utc, tz, s, plant_name))
                 else:
                     for occ_utc in iter_weekly_occurrences(
-                        last_dt_utc=last_dt_utc,
-                        last_src=last_src,
-                        weekly_mask=s.weekly_mask,
-                        local_t=s.local_time,
-                        tz_name=tz_name,
-                        tz=tz,
-                        start_utc=start_utc,
-                        end_utc=end_utc,
+                            last_dt_utc=last_dt_utc,
+                            last_src=last_src,
+                            weekly_mask=s.weekly_mask,
+                            local_t=s.local_time,
+                            tz_name=tz_name,
+                            tz=tz,
+                            start_utc=start_utc,
+                            end_utc=end_utc,
                     ):
                         items.append(make_feed_item(occ_utc, tz, s, plant_name))
 
@@ -321,26 +352,26 @@ async def get_feed_subs(
             plant_name = plant_name_cache.get(s.plant_id, f"#{getattr(s, 'plant_id', 0)}")
 
             if s.type == ScheduleType.INTERVAL:
-                for occ_utc in iter_interval_occurrences(
-                    last_dt_utc=last_dt_utc,
-                    interval_days=s.interval_days,
-                    local_t=s.local_time,
-                    tz_name=tz_name,
-                    tz=tz,
-                    start_utc=start_utc,
-                    end_utc=end_utc,
+                for occ_utc in iter_interval_occurrences_strict(
+                        last_dt_utc=last_dt_utc,
+                        interval_days=s.interval_days,
+                        local_t=s.local_time,
+                        tz_name=tz_name,
+                        tz=tz,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
                 ):
                     items.append(make_feed_item(occ_utc, tz, s, plant_name))
             else:
                 for occ_utc in iter_weekly_occurrences(
-                    last_dt_utc=last_dt_utc,
-                    last_src=last_src,
-                    weekly_mask=s.weekly_mask,
-                    local_t=s.local_time,
-                    tz_name=tz_name,
-                    tz=tz,
-                    start_utc=start_utc,
-                    end_utc=end_utc,
+                        last_dt_utc=last_dt_utc,
+                        last_src=last_src,
+                        weekly_mask=s.weekly_mask,
+                        local_t=s.local_time,
+                        tz_name=tz_name,
+                        tz=tz,
+                        start_utc=start_utc,
+                        end_utc=end_utc,
                 ):
                     items.append(make_feed_item(occ_utc, tz, s, plant_name))
 
