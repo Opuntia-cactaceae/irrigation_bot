@@ -22,7 +22,6 @@ def kb_settings_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="🔗 Ввести код", callback_data=f"{PREFIX}:subs_enter_code")
     kb.button(text="📋 Мои подписки", callback_data=f"{PREFIX}:subs_list:1")
-    kb.button(text="🗓 Календарь подписок", callback_data="settings:cal_subs")
     kb.button(text="↩️ Назад", callback_data=f"{PREFIX}:menu")
     kb.adjust(1)
     return kb.as_markup()

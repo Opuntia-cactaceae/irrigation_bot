@@ -22,7 +22,6 @@ from bot.handlers.start import router as start_router
 from bot.handlers.settings_inline import settings_router as settings_menu_router
 from bot.handlers.settings_share_wizard import settings_router as settings_share_router
 from bot.handlers.settings_subscriptions import settings_router as settings_subs_router
-from bot.handlers.calendar_subs_inline import calendar_subs_router
 
 from bot.scheduler import start_scheduler, plan_all_active
 
@@ -57,7 +56,6 @@ async def main():
     dp.include_router(plants_router)
 
     dp.include_router(calendar_router)
-    dp.include_router(calendar_subs_router)
 
     dp.include_router(schedule_router)
     dp.include_router(reminder_router)
