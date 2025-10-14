@@ -377,3 +377,27 @@ async def get_feed_subs(
 
         days: List["FeedDay"] = group_feed_items_by_day(items)
         return FeedPage(page=page, pages=total_pages, days=days)
+
+def merge_feed_pages(feed_a, feed_b, *, page: int, pages: int):
+    """
+    Склеивает два FeedPage-объекта (по одному окну дат), объединяя дни и сортируя события.
+    Предполагает, что оба фида посчитаны на ОДНИ и те же start/end локальные дни (одинаковые page/days_per_page).
+    """
+    by_day: Dict[date, List] = {}
+
+    def _add(fp):
+        if not fp or not getattr(fp, "days", None):
+            return
+        for day in fp.days:
+            by_day.setdefault(day.date_local, []).extend(day.items)
+
+    _add(feed_a)
+    _add(feed_b)
+
+    days = []
+    for d in sorted(by_day.keys()):
+        items = sorted(by_day[d], key=lambda x: x.dt_local)
+        days.append(type(feed_a.days[0]) if feed_a.days else type(feed_b.days[0])(date_local=d, items=items))
+
+    FeedPageCls = type(feed_a) if feed_a else type(feed_b)
+    return FeedPageCls(page=page, pages=pages, days=days)

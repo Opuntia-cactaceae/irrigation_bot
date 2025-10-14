@@ -5,11 +5,11 @@ from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.context import FSMContext
 from datetime import timezone, datetime
-from typing import Optional
+from typing import Optional, Dict
 
 from bot.handlers.schedule_inline import show_schedule_wizard
 from bot.db_repo.models import ActionType
-from bot.services.calendar_feed import get_feed, get_feed_subs, Mode
+from bot.services.calendar_feed import get_feed, get_feed_subs, Mode, merge_feed_pages
 from bot.db_repo.unit_of_work import new_uow
 from bot.services.cal_shared import CODE_TO_ACTION as ACT_MAP, ACTION_TO_EMOJI as ACT_TO_EMOJI, ACTION_TO_CODE as ACT_TO_CODE
 
@@ -28,7 +28,7 @@ async def show_calendar_root(
     plant_id: Optional[int] = None,
     mode: Mode = "upc",
     page: int = 1,
-    shared_only: bool = False,
+    shared_mode: int = 0,
 ):
     if isinstance(target, types.CallbackQuery):
         message = target.message
@@ -37,7 +37,9 @@ async def show_calendar_root(
         message = target
         user_id = target.from_user.id
 
-    if shared_only:
+    PAGE_SIZE_DAYS = 5
+
+    if shared_mode == 2:
         feed_page = await get_feed_subs(
             user_tg_id=user_id,
             action=action,
@@ -45,7 +47,7 @@ async def show_calendar_root(
             page=page,
             days_per_page=PAGE_SIZE_DAYS,
         )
-    else:
+    elif shared_mode == 1:
         feed_page = await get_feed(
             user_tg_id=user_id,
             action=action,
@@ -54,10 +56,28 @@ async def show_calendar_root(
             page=page,
             days_per_page=PAGE_SIZE_DAYS,
         )
+    else:
+        own = await get_feed(
+            user_tg_id=user_id,
+            action=action,
+            plant_id=plant_id,
+            mode=mode,
+            page=page,
+            days_per_page=PAGE_SIZE_DAYS,
+        )
+        subs = await get_feed_subs(
+            user_tg_id=user_id,
+            action=action,
+            mode=mode,
+            page=page,
+            days_per_page=PAGE_SIZE_DAYS,
+        )
+        pages = max(getattr(own, "pages", 1), getattr(subs, "pages", 1))
+        feed_page = merge_feed_pages(own, subs, page=page, pages=pages)
 
-    header = _render_header(mode, action, plant_id, shared_only=shared_only)
+    header = _render_header(mode, action, plant_id, shared_mode=shared_mode)
     body = _render_feed_text(feed_page)
-    kb = _kb_calendar(mode, feed_page.page, feed_page.pages, action, plant_id, shared_only=shared_only)
+    kb = _kb_calendar(mode, feed_page.page, feed_page.pages, action, plant_id, shared_mode=shared_mode)
 
     text = header + "\n" + body
     if isinstance(target, types.CallbackQuery):
@@ -73,7 +93,7 @@ def _kb_calendar(
     pages: int,
     action: Optional[ActionType],
     plant_id: Optional[int],
-    shared_only: bool,
+    shared_mode: int,
 ):
     kb = InlineKeyboardBuilder()
 
@@ -82,15 +102,23 @@ def _kb_calendar(
         mark = "✓ " if active and code != "all" else ""
         kb.button(
             text=f"{mark}{text}",
-            callback_data=f"{PREFIX}:act:{mode}:{page}:{code}:{plant_id or 0}:{int(shared_only)}",  # 👈 добавили флаг
+            callback_data=f"{PREFIX}:act:{mode}:{page}:{code}:{plant_id or 0}:{shared_mode}",
         )
     kb.adjust(4)
 
+    lbl = [
+        ("Все события", 0),
+        ("Без подписок", 1),
+        ("Только подписки", 2),
+    ]
     kb.row(
-        types.InlineKeyboardButton(
-            text=("👥 Только подписки ✓" if shared_only else "👥 Только подписки"),
-            callback_data=f"{PREFIX}:shared_toggle:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(not shared_only)}",
-        )
+        *[
+            types.InlineKeyboardButton(
+                text=(("✓ " if shared_mode == sm else "") + name),
+                callback_data=f"{PREFIX}:shared:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{sm}",
+            )
+            for name, sm in lbl
+        ]
     )
 
     upc_active = (mode == "upc")
@@ -98,11 +126,11 @@ def _kb_calendar(
     kb.row(
         types.InlineKeyboardButton(
             text=("📌 Ближайшие ✓" if upc_active else "📌 Ближайшие"),
-            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}",
         ),
         types.InlineKeyboardButton(
             text=("📜 История ✓" if hist_active else "📜 История"),
-            callback_data=f"{PREFIX}:feed:hist:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:feed:hist:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}",
         ),
     )
 
@@ -113,12 +141,12 @@ def _kb_calendar(
 
     left_text = "◀️" if has_prev else "⏺"
     left_cb = (
-        f"{PREFIX}:page:{mode}:{prev_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}"
+        f"{PREFIX}:page:{mode}:{prev_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}"
         if has_prev else f"{PREFIX}:noop"
     )
     right_text = "▶️" if has_next else "⏺"
     right_cb = (
-        f"{PREFIX}:page:{mode}:{next_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}"
+        f"{PREFIX}:page:{mode}:{next_page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}"
         if has_next else f"{PREFIX}:noop"
     )
 
@@ -131,7 +159,7 @@ def _kb_calendar(
     kb.row(
         types.InlineKeyboardButton(
             text="🗓️ Запланировать",
-            callback_data=f"{PREFIX}:plan:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:plan:{mode}:{page}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}",
         ),
         types.InlineKeyboardButton(
             text="🗑 Удалить расписания",
@@ -145,7 +173,7 @@ def _kb_calendar(
     return kb.as_markup()
 
 
-def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[int], *, shared_only: bool) -> str:
+def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[int], *, shared_mode: int) -> str:
     act_label = {
         None: "Все действия",
         ActionType.WATERING: "Полив",
@@ -153,13 +181,16 @@ def _render_header(mode: Mode, action: Optional[ActionType], plant_id: Optional[
         ActionType.REPOTTING: "Пересадка",
     }[action]
     mode_label = "Ближайшие" if mode == "upc" else "История"
-    shared_lbl = " · 👥 Только из подписок" if shared_only else ""
+    shared_lbl = {
+        0: " · Все события",
+        1: " · Без подписок",
+        2: " · Только подписки",
+    }.get(shared_mode, "")
     return (
         f"📅 <b>Календарь</b>\n"
         f"Фильтр: <b>{act_label}</b>{shared_lbl}\n"
         f"Раздел: <b>{mode_label}</b>"
     )
-
 
 def _render_feed_text(feed_page) -> str:
     if not getattr(feed_page, "days", None):
@@ -187,26 +218,22 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
     if cmd == "noop":
         return await cb.answer()
 
-    # общие параметры для всех команд этого хэндлера
+    # общие параметры
     mode: Mode = (parts[2] if len(parts) > 2 else "upc")
     page = int(parts[3]) if len(parts) > 3 else 1
     act_code = parts[4] if len(parts) > 4 else "all"
     pid = int(parts[5]) if len(parts) > 5 else 0
     try:
-        shared_only = bool(int(parts[6])) if len(parts) > 6 else False  # 👈 читаем флаг
+        shared_mode = int(parts[6]) if len(parts) > 6 else 0
     except Exception:
-        shared_only = False
+        shared_mode = 0
 
-    # Историю здесь не рендерим — для неё отдельный роутер history_inline
-    if mode == "hist" and cmd in ("root", "feed", "page", "act", "shared_toggle"):
-        # Передаём управление истории (кнопки уже формируют корректный payload для history_inline)
+    if mode == "hist" and cmd in ("root", "feed", "page", "act", "shared"):
         return
 
-    if cmd in ("root", "feed", "page", "act", "shared_toggle"):
+    if cmd in ("root", "feed", "page", "act", "shared"):
         action = ACT_MAP.get(act_code, None)
         plant_id = pid or None
-
-        # если пришёл shared_toggle — уже получили новое значение в parts[6]
         return await show_calendar_root(
             cb,
             year=datetime.now().year,
@@ -215,7 +242,7 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
             plant_id=plant_id,
             mode=mode,
             page=page,
-            shared_only=shared_only,  # 👈 важное место
+            shared_mode=shared_mode,
         )
 
     if cmd == "plan":
@@ -227,7 +254,7 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
             page = int(parts[3])
             act_code = parts[4]
             pid = int(parts[5])
-            shared_only = bool(int(parts[6]))
+            shared_mode = int(parts[6])
             schedule_id = int(parts[7])
         except Exception:
             return await cb.answer("Не получилось отметить", show_alert=True)
@@ -247,7 +274,7 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
                     plant_id=plant_id,
                     mode=mode,
                     page=page,
-                    shared_only=shared_only,
+                    shared_mode=shared_mode,
                 )
 
             plant = await uow.plants.get(getattr(sch, "plant_id", None))
@@ -274,7 +301,8 @@ async def on_calendar_callbacks(cb: types.CallbackQuery, state: FSMContext):
             plant_id=plant_id,
             mode=mode,
             page=page,
-            shared_only=shared_only,
+            shared_mode=shared_mode,
         )
 
     await cb.answer()
+
