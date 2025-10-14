@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from datetime import datetime, timedelta, date, time
-from typing import Optional, Dict, List, Literal, Iterator
+from typing import Optional, Dict, List, Literal, Iterator, Tuple
 import pytz
 
 from bot.db_repo.unit_of_work import new_uow
@@ -378,26 +378,49 @@ async def get_feed_subs(
         days: List["FeedDay"] = group_feed_items_by_day(items)
         return FeedPage(page=page, pages=total_pages, days=days)
 
-def merge_feed_pages(feed_a, feed_b, *, page: int, pages: int):
-    """
-    Склеивает два FeedPage-объекта (по одному окну дат), объединяя дни и сортируя события.
-    Предполагает, что оба фида посчитаны на ОДНИ и те же start/end локальные дни (одинаковые page/days_per_page).
-    """
-    by_day: Dict[date, List] = {}
+def merge_feed_pages(
+    feed_a: Optional[FeedPage],
+    feed_b: Optional[FeedPage],
+    *,
+    page: int,
+    pages: int,
+) -> FeedPage:
 
-    def _add(fp):
-        if not fp or not getattr(fp, "days", None):
-            return
-        for day in fp.days:
-            by_day.setdefault(day.date_local, []).extend(day.items)
+    a_days = feed_a.days if feed_a else []
+    b_days = feed_b.days if feed_b else []
+
+    if not a_days and not b_days:
+        return FeedPage(page=page, pages=pages, days=[])
+
+    if a_days and not b_days:
+        return FeedPage(page=page, pages=pages, days=list(a_days))
+
+    if b_days and not a_days:
+        return FeedPage(page=page, pages=pages, days=list(b_days))
+
+    by_day: Dict[date, List[FeedItem]] = {}
+
+    def _add(fp: FeedPage) -> None:
+        for d in fp.days:
+            by_day.setdefault(d.date_local, []).extend(d.items)
 
     _add(feed_a)
     _add(feed_b)
 
-    days = []
+    days: List[FeedDay] = []
     for d in sorted(by_day.keys()):
-        items = sorted(by_day[d], key=lambda x: x.dt_local)
-        days.append(type(feed_a.days[0]) if feed_a.days else type(feed_b.days[0])(date_local=d, items=items))
+        items = by_day[d]
 
-    FeedPageCls = type(feed_a) if feed_a else type(feed_b)
-    return FeedPageCls(page=page, pages=pages, days=days)
+        seen: set[Tuple[int, datetime]] = set()
+        deduped: List[FeedItem] = []
+        for it in items:
+            key = (it.schedule_id, it.dt_utc)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(it)
+
+        deduped.sort(key=lambda x: x.dt_local)
+        days.append(FeedDay(date_local=d, items=deduped))
+
+    return FeedPage(page=page, pages=pages, days=days)
