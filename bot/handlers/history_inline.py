@@ -65,7 +65,7 @@ async def _get_history_week(
     action: Optional[ActionType],
     plant_id: Optional[int],
     week_offset: int = 0,
-    shared_only: bool = False,
+    shared_mode: int = 0,
 ) -> HistoryWeek:
     async with new_uow() as uow:
         user: User = await uow.users.get(user_tg_id)
@@ -80,34 +80,25 @@ async def _get_history_week(
         _, until_utc = _local_day_bounds_utc(tz, sunday + timedelta(days=1))
 
         own_logs = await uow.action_logs.list_by_user(
-            user.id,
-            action=action or None,
-            status=None,
-            since=since_utc,
-            until=until_utc,
-            limit=10_000,
-            offset=0,
-            with_relations=False,
+            user.id, action=action or None, status=None,
+            since=since_utc, until=until_utc,
+            limit=10_000, offset=0, with_relations=False,
         )
-
         shared_logs = await uow.action_logs.list_shared_for_subscriber(
-            user.id,
-            action=action or None,
-            status=None,
-            since=since_utc,
-            until=until_utc,
-            limit=10_000,
-            offset=0,
-            with_relations=False,
+            user.id, action=action or None, status=None,
+            since=since_utc, until=until_utc,
+            limit=10_000, offset=0, with_relations=False,
         )
 
-        logs = list(own_logs) + list(shared_logs)
+        if shared_mode == 1:
+            logs = list(own_logs)
+        elif shared_mode == 2:
+            logs = list(shared_logs)
+        else:
+            logs = list(own_logs) + list(shared_logs)
 
         if plant_id:
             logs = [lg for lg in logs if getattr(lg, "plant_id", None) == plant_id]
-
-        if shared_only:
-            logs = [lg for lg in logs if getattr(lg, "share_id", None)]
 
         bucket: Dict[date, List[HistoryItem]] = {}
         for lg in logs:
@@ -123,7 +114,7 @@ async def _get_history_week(
                 plant_id=getattr(lg, "plant_id", None),
                 schedule_id=getattr(lg, "schedule_id", None),
                 plant_name=(getattr(lg, "plant_name_at_time", None) or "(без растения)"),
-                is_shared=bool(getattr(lg, "share_id", None)),  # метка «из подписки»
+                is_shared=bool(getattr(lg, "share_id", None)),
             )
             bucket.setdefault(d, []).append(item)
 
@@ -148,7 +139,7 @@ async def show_history_root(
     action: Optional[ActionType] = None,
     plant_id: Optional[int] = None,
     week_offset: int = 0,
-    shared_only: bool = False,  # 👈 новый арг
+    shared_mode: int = 0,
 ):
     if isinstance(target, types.CallbackQuery):
         message = target.message
@@ -162,10 +153,10 @@ async def show_history_root(
         action=action,
         plant_id=plant_id,
         week_offset=week_offset,
-        shared_only=shared_only,
+        shared_mode=shared_mode,
     )
 
-    header = _render_header(action, plant_id, hist.start_local, hist.end_local, shared_only=shared_only)
+    header = _render_header(action, plant_id, hist.start_local, hist.end_local, shared_mode=shared_mode)  # 👈
     body = _render_feed_text(hist)
     kb = _kb_history(
         week_offset=hist.week_offset,
@@ -173,7 +164,7 @@ async def show_history_root(
         plant_id=plant_id,
         start=hist.start_local,
         end=hist.end_local,
-        shared_only=shared_only,
+        shared_mode=shared_mode,
     )
 
     text = header + "\n" + body
@@ -191,7 +182,7 @@ def _kb_history(
     plant_id: Optional[int],
     start: date,
     end: date,
-    shared_only: bool,
+    shared_mode: int,
 ):
     kb = InlineKeyboardBuilder()
 
@@ -204,17 +195,25 @@ def _kb_history(
         )
     kb.adjust(4)
 
+    lbl = [
+        ("Все", 0),
+        ("Без 👥", 1),
+        ("👥", 2),
+    ]
     kb.row(
-        types.InlineKeyboardButton(
-            text=("👥 Только подписки ✓" if shared_only else "👥 Только подписки"),
-            callback_data=f"{PREFIX}:shared_toggle:hist:{week_offset}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(not shared_only)}",
-        )
+        *[
+            types.InlineKeyboardButton(
+                text=(("✓ " if shared_mode == sm else "") + name),
+                callback_data=f"{PREFIX}:shared:hist:{week_offset}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{sm}",
+            )
+            for name, sm in lbl
+        ]
     )
 
     kb.row(
         types.InlineKeyboardButton(
             text="📌 Ближайшие",
-            callback_data=f"{PREFIX}:feed:upc:0:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{(2 if shared_only else 0)}",
         ),
         types.InlineKeyboardButton(
             text="📜 История ✓",
@@ -258,7 +257,7 @@ def _render_header(
     start: date,
     end: date,
     *,
-    shared_only: bool,
+    shared_mode: int,
 ) -> str:
     act_label = {
         None: "Все действия",
@@ -266,7 +265,11 @@ def _render_header(
         ActionType.FERTILIZING: "Удобрения",
         ActionType.REPOTTING: "Пересадка",
     }[action]
-    shared_lbl = " · 👥 Только из подписок" if shared_only else ""
+    shared_lbl = {
+        0: " · Все события",
+        1: " · Без подписок",
+        2: " · Только подписки",
+    }.get(shared_mode, "")
     return (
         f"📅 <b>Календарь</b>\n"
         f"Фильтр: <b>{act_label}</b>{shared_lbl}\n"
@@ -309,12 +312,12 @@ async def on_noop(cb: types.CallbackQuery):
     await cb.answer()
 
 
-@history_router.callback_query(F.data.regexp(rf"^{PREFIX}:(feed|page|act|root|shared_toggle):hist:"))
+@history_router.callback_query(F.data.regexp(rf"^{PREFIX}:(feed|page|act|root|shared):hist:"))
 async def on_history_callbacks(cb: types.CallbackQuery):
     parts = cb.data.split(":")
     cmd = parts[1] if len(parts) > 1 else "noop"
 
-    if cmd not in ("feed", "page", "act", "root", "shared_toggle"):
+    if cmd not in ("feed", "page", "act", "root", "shared"):
         return
 
     mode = (parts[2] if len(parts) > 2 else "upc")
@@ -330,9 +333,9 @@ async def on_history_callbacks(cb: types.CallbackQuery):
     pid = int(parts[5]) if len(parts) > 5 else 0
 
     try:
-        shared_only = bool(int(parts[6])) if len(parts) > 6 else False
+        shared_mode = int(parts[6]) if len(parts) > 6 else 0
     except Exception:
-        shared_only = False
+        shared_mode = 0
 
     action = ACT_MAP.get(act_code, None)
     plant_id = pid or None
@@ -340,11 +343,10 @@ async def on_history_callbacks(cb: types.CallbackQuery):
     if week_offset > 0:
         week_offset = 0
 
-
     return await show_history_root(
         cb,
         action=action,
         plant_id=plant_id,
         week_offset=week_offset,
-        shared_only=shared_only,
+        shared_mode=shared_mode,
     )

@@ -30,6 +30,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     tz: Mapped[str] = mapped_column(String(64), default="Europe/Amsterdam")
+    tg_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     plants: Mapped[list["Plant"]] = relationship(
         back_populates="user",

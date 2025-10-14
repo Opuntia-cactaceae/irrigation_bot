@@ -15,12 +15,21 @@ class UsersRepo(BaseRepo):
         q = select(User).where(User.id == tg_user_id)
         return (await self.session.execute(q)).scalar_one_or_none()
 
-    async def create(self, id: int, tz: str = "Europe/Amsterdam") -> User:
-        user = User(id=id, tz=tz)
+    async def create(
+            self,
+            id: int,
+            tz: str = "Europe/Amsterdam",
+            tg_username: str | None = None,
+    ) -> User:
+        user = User(id=id, tz=tz, tg_username=tg_username)
         await self.add(user)
         await self.session.flush()
         return user
 
     async def set_timezone(self, user_id: int, tz: str) -> None:
         q = update(User).where(User.id == user_id).values(tz=tz)
+        await self.session.execute(q)
+
+    async def set_username(self, user_id: int, tg_username: Optional[str]) -> None:
+        q = update(User).where(User.id == user_id).values(tg_username=tg_username)
         await self.session.execute(q)

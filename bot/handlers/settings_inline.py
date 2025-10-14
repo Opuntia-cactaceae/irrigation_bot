@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import List, Tuple
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, types, F
 from aiogram.fsm.state import StatesGroup, State
@@ -12,18 +14,22 @@ from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import Schedule, Plant, User, ActionType
 from bot.db_repo.schedules import SchedulesRepo
 
+try:
+    from .timezone import show_timezone_prompt
+except Exception:
+    show_timezone_prompt = None
+
 settings_router = Router(name="settings_inline")
 
 PREFIX = "settings"
 PAGE_SIZE = 7
 
 
-# ---------- FSM ----------
 class SettingsStates(StatesGroup):
     waiting_sub_code = State()
+    waiting_new_nick = State()
 
 
-# ---------- Utils ----------
 def _slice(items: list, page: int, size: int = PAGE_SIZE):
     total = len(items)
     pages = max(1, (total + size - 1) // size)
@@ -48,9 +54,9 @@ async def create_user_by_tg(tg_id: int) -> User:
         return await uow.users.create(tg_id)
 
 
-# ---------- Public entry ----------
 async def show_settings_menu(target: types.CallbackQuery | types.Message):
     kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="👤 Пользователь", callback_data=f"{PREFIX}:user"))  # <- NEW
     kb.row(types.InlineKeyboardButton(text="🔗 Поделиться расписанием", callback_data=f"{PREFIX}:share_wizard:start"))
     kb.row(types.InlineKeyboardButton(text="📬 Подписки", callback_data=f"{PREFIX}:subs"))
     kb.row(types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"))
@@ -63,7 +69,6 @@ async def show_settings_menu(target: types.CallbackQuery | types.Message):
         await target.answer(text, reply_markup=kb.as_markup())
 
 
-# ---------- базовые ----------
 @settings_router.callback_query(F.data == f"{PREFIX}:menu")
 async def on_settings_menu(cb: types.CallbackQuery):
     await show_settings_menu(cb)
@@ -71,3 +76,109 @@ async def on_settings_menu(cb: types.CallbackQuery):
 @settings_router.callback_query(F.data == f"{PREFIX}:noop")
 async def on_noop(cb: types.CallbackQuery):
     await cb.answer()
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user")
+async def on_user_root(cb: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=f"{PREFIX}:user:tz"))
+    kb.row(types.InlineKeyboardButton(text="📝 Ник", callback_data=f"{PREFIX}:user:nick"))
+    kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:menu"))
+    await cb.message.edit_text("👤 <b>Пользователь</b>\nВыберите раздел:", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:tz")
+async def on_user_timezone(cb: types.CallbackQuery):
+    async with new_uow() as uow:
+        user = await uow.users.get(cb.from_user.id)
+
+    tz_name = getattr(user, "tz", None) or "UTC"
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(ZoneInfo("UTC"))
+
+    text = (
+        "🕒 <b>Таймзона</b>\n"
+        f"Текущая таймзона: <code>{tz_name}</code>\n"
+        f"Сейчас там: <code>{now_local:%Y-%m-%d %H:%M}</code>"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=f"{PREFIX}:user:tz:change"),
+        types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:user")
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:tz:change")
+async def on_user_timezone_change(cb: types.CallbackQuery, state: FSMContext):
+    if show_timezone_prompt:
+        await show_timezone_prompt(cb, state)
+    else:
+        await cb.answer("Не удалось запустить смену таймзоны", show_alert=True)
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick")
+async def on_user_nick(cb: types.CallbackQuery):
+    async with new_uow() as uow:
+        user = await uow.users.get(cb.from_user.id)
+
+    stored_nick = getattr(user, "tg_username", None) or "—"
+    tg_username = cb.from_user.username or "—"
+
+    text = (
+        "📝 <b>Ник</b>\n"
+        f"Сохранённый ник в боте: <code>{stored_nick}</code>\n"
+        f"Ваш Telegram: <code>{tg_username}</code>\n\n"
+        "Можно хранить свой ник в боте — он не обязан совпадать с Telegram."
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=f"{PREFIX}:user:nick:change"),
+        types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:user")
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick:change")
+async def on_user_nick_change(cb: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚫 Отмена", callback_data=f"{PREFIX}:user:nick:cancel"))
+    await cb.message.edit_text(
+        "Введите новый ник (1–32 символа).",
+        reply_markup=kb.as_markup()
+    )
+    await state.set_state(SettingsStates.waiting_new_nick)
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick:cancel")
+async def on_user_nick_cancel(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await on_user_nick(cb)
+    await cb.answer("Отменено")
+
+
+@settings_router.message(SettingsStates.waiting_new_nick, F.text)
+async def on_user_nick_input(m: types.Message, state: FSMContext):
+    raw = (m.text or "").strip()
+
+    if not (1 <= len(raw) <= 32):
+        await m.answer("Ник должен быть длиной от 1 до 32 символов. Попробуйте ещё раз или нажмите «Отмена».")
+        return
+
+    async with new_uow() as uow:
+        await uow.users.set_username(m.from_user.id, raw)
+        await uow.commit()
+
+    await m.answer(f"Готово! Ник обновлён: <b>{raw}</b>", parse_mode="HTML")
+    await state.clear()
+
+    fake_cb = types.CallbackQuery(id="0", from_user=m.from_user, chat_instance="", message=m)
+    fake_cb.data = f"{PREFIX}:user:nick"
+    await on_user_nick(fake_cb)

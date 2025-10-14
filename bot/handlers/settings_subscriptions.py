@@ -242,13 +242,24 @@ async def on_subs_list(cb: types.CallbackQuery):
         return
 
     async with new_uow() as uow:
-        titles: List[str] = []
+        lines: List[str] = []
         for m in items:
             share = await uow.share_links.get(m.share_id)
             title = getattr(share, "title", None) or f"Подписка #{m.id}"
-            titles.append(f"• <b>{title}</b> — {_status_label(getattr(m, 'status', None))}")
 
-    text = "📋 <b>Мои подписки</b>:\n\n" + "\n".join(titles)
+            owner_user_id = share.owner_user_id
+            owner_label = "неизвестно"
+            if owner_user_id:
+                owner_user = await uow.users.get(owner_user_id)
+                nick = getattr(owner_user, "tg_username", None)
+                if nick:
+                    owner_label = f"@{nick}" if not nick.startswith("@") else nick
+                else:
+                    owner_label = f"id:{owner_user_id}"
+
+            lines.append(f"• <b>{title}</b> — от {owner_label} — {_status_label(getattr(m, 'status', None))}")
+
+    text = "📋 <b>Мои подписки</b>:\n\n" + "\n".join(lines)
     await cb.message.edit_text(text, reply_markup=kb_subs_list_page([m.id for m in items], page, pages))
     await cb.answer()
 
@@ -320,7 +331,6 @@ async def on_subs_unsub(cb: types.CallbackQuery):
     await on_subs_list(cb2)
 
 
-# ---------- No-op ----------
 @settings_router.callback_query(F.data == f"{PREFIX}:noop")
 async def on_noop(cb: types.CallbackQuery):
     await cb.answer()

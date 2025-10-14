@@ -156,6 +156,14 @@ def _kb_calendar(
         types.InlineKeyboardButton(text=right_text, callback_data=right_cb),
     )
 
+    if page != 1:
+        kb.row(
+            types.InlineKeyboardButton(
+                text="🏠 К текущей неделе",
+                callback_data=f"{PREFIX}:page:{mode}:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{shared_mode}",
+            )
+        )
+
     kb.row(
         types.InlineKeyboardButton(
             text="🗓️ Запланировать",
