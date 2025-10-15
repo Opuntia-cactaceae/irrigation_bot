@@ -1,9 +1,9 @@
 # bot/handlers/cal_shared.py
 from __future__ import annotations
-from typing import Optional
-from datetime import timezone
+from typing import Optional, Literal, Any
+from datetime import timezone, datetime
 
-from bot.db_repo.models import ActionType, ActionStatus
+from bot.db_repo.models import ActionType, ActionStatus, ScheduleType
 
 CODE_TO_ACTION: dict[str, Optional[ActionType]] = {
     "all": None,
@@ -27,31 +27,98 @@ STATUS_TO_EMOJI = {
     ActionStatus.SKIPPED: "⏭️",
 }
 
-def action_label_ru(action: Optional[ActionType]) -> str:
-    return "Все действия" if action is None else action.title_ru()
+WEEK_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
-def render_feed_text(feed_page, *, show_status: bool = False) -> str:
-    if not getattr(feed_page, "days", None):
-        return "Пока пусто."
-    lines: list[str] = []
-    for day in feed_page.days:
-        d = day.date_local
-        lines.append(f"\n📅 <b>{d:%d.%m (%a)}</b>")
-        for it in day.items:
-            act = ActionType.from_any(getattr(it, "action", None))
-            act_emoji = ACTION_TO_EMOJI.get(act, "•")
-            t = (
-                it.dt_local.strftime("%H:%M")
-                if getattr(it, "dt_local", None)
-                else it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
-                if getattr(it, "dt_utc", None)
-                else "—:—"
-            )
-            if show_status:
-                raw_status = getattr(it, "status", ActionStatus.DONE)
-                status = raw_status if isinstance(raw_status, ActionStatus) else ActionStatus(str(raw_status)) if raw_status else ActionStatus.DONE
-                status_emoji = STATUS_TO_EMOJI.get(status, "✅")
-                lines.append(f"  {t} {status_emoji} {act_emoji} {it.plant_name} (id:{it.plant_id})")
-            else:
-                lines.append(f"  {t} {act_emoji} {it.plant_name} (id:{it.plant_id})")
-    return "\n".join(lines).lstrip()
+
+def _as_value(x):
+    return getattr(x, "value", x)
+
+
+def _fmt_date_label(dt_local: datetime) -> str:
+    """Возвращает дату в формате: 'Ср 09.10'."""
+    dow = WEEK_RU[dt_local.weekday()]
+    return f"{dow} {dt_local.day:02d}.{dt_local.month:02d}"
+
+
+def _fmt_tail_for_quick_done(
+    *,
+    s_type: Any,
+    weekly_mask: Optional[int],
+    interval_days: Optional[int],
+    dt_local: datetime,
+) -> str:
+    s_val = _as_value(s_type)
+    interval_val = _as_value(ScheduleType.INTERVAL)
+
+    if s_val == ScheduleType.INTERVAL or s_val == interval_val:
+        d = int(interval_days or 0)
+        return f"каждые {d} дн" if d > 0 else ""
+
+    mask = int(weekly_mask or 0)
+    if mask == 0:
+        return ""
+    days = [lbl for i, lbl in enumerate(WEEK_RU) if mask & (1 << i)]
+    if len(days) == 1 and WEEK_RU[dt_local.weekday()] == days[0]:
+        return ""
+    return ",".join(days)
+
+
+def _fmt_body_for_delete(
+    *,
+    s_type: Any,
+    weekly_mask: Optional[int],
+    interval_days: Optional[int],
+    time_str: str,
+) -> str:
+    s_val = _as_value(s_type)
+    interval_val = _as_value(ScheduleType.INTERVAL)
+
+    if s_val == ScheduleType.INTERVAL or s_val == interval_val:
+        d = int(interval_days or 0)
+        d_txt = f"каждые {d} дн" if d > 0 else "каждые ? дн"
+        return f"⏱ {d_txt} в {time_str}"
+
+    mask = int(weekly_mask or 0)
+    days = [lbl for i, lbl in enumerate(WEEK_RU) if mask & (1 << i)]
+    days_txt = ",".join(days) if days else "—"
+    return f"🗓 {days_txt} в {time_str}"
+
+
+def format_schedule_line(
+    *,
+    idx: Optional[int],
+    plant_name: str,
+    action: Any,
+    dt_local: datetime,
+    s_type: Any,
+    weekly_mask: Optional[int],
+    interval_days: Optional[int],
+    mode: Literal["delete", "quick_done"] = "quick_done",
+) -> str:
+    at = ActionType.from_any(action)
+    emoji = at.emoji() if at else "•"
+    t_str = dt_local.strftime("%H:%M")
+
+    if mode == "quick_done":
+        date_lbl = _fmt_date_label(dt_local)
+        tail = _fmt_tail_for_quick_done(
+            s_type=s_type,
+            weekly_mask=weekly_mask,
+            interval_days=interval_days,
+            dt_local=dt_local,
+        )
+        core = f"{date_lbl} {t_str} {emoji} {plant_name}"
+        line = f"{core} {tail}".rstrip()
+    else:
+        body = _fmt_body_for_delete(
+            s_type=s_type,
+            weekly_mask=weekly_mask,
+            interval_days=interval_days,
+            time_str=t_str,
+        )
+        line = f"{emoji} {plant_name} · {body}"
+
+    if idx is not None:
+        return f"{idx:>2}. {line}"
+    return line
+

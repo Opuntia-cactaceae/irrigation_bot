@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Optional
 
 import pytz
-
 from aiogram import Bot
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -20,16 +19,24 @@ from apscheduler.events import (
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-
 from bot.config import settings
-from bot.db_repo.models import ActionType, Schedule, ScheduleType, User, Plant
-from bot.db_repo.models import ActionStatus, ActionSource
-from bot.services.rules import next_by_interval, next_by_weekly
+from bot.db_repo.models import (
+    User,
+    Plant,
+    Schedule,
+    ActionType,
+    ActionSource,
+    ActionStatus,
+    ScheduleType,
+    ActionPending,
+    ActionPendingMessage,
+)
 from bot.db_repo.unit_of_work import new_uow
+from bot.services.rules import next_by_interval, next_by_weekly
 
 class RemindCb(CallbackData, prefix="r"):
     action: str
-    schedule_id: int
+    pending_id: int
 
 
 logger = logging.getLogger(__name__)
@@ -42,13 +49,6 @@ SYNC_DB_URL = (
 )
 jobstores = {"default": SQLAlchemyJobStore(url=SYNC_DB_URL, tablename="apscheduler_jobs")}
 scheduler = AsyncIOScheduler(jobstores=jobstores)
-
-
-ACTION_EMOJI = {
-    ActionType.WATERING: "💧",
-    ActionType.FERTILIZING: "💊",
-    ActionType.REPOTTING: "🪴",
-}
 
 
 def _job_id(schedule_id: int) -> str:
@@ -124,46 +124,126 @@ def _heartbeat():
         logger.exception("[SCHED HEARTBEAT] failed")
 
 
-async def send_reminder(schedule_id: int):
-    logger.info("[JOB START] schedule_id=%s", schedule_id)
 
+def _build_action_kb_for_pending(pending_id: int, allowed: bool):
+    """Возвращает клавиатуру с pending_id, если пользователю разрешено отмечать действия"""
+    if not allowed:
+        return None
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Сделано", callback_data=RemindCb(action="done", pending_id=pending_id).pack())
+    kb.button(text="⏭️ Пропустить", callback_data=RemindCb(action="skip", pending_id=pending_id).pack())
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def send_reminder(pending_id: int):
+    """Отправка уведомлений владельцу и подписчикам с учётом разрешений. Все записи в БД — через репозитории."""
+    logger.info("[JOB START] pending_id=%s", pending_id)
     bot = Bot(token=settings.BOT_TOKEN)
+
     try:
         async with new_uow() as uow:
-            sch = await uow.jobs.get_schedule(schedule_id)
+
+            pending = await uow.action_pendings.get(pending_id)
+            if not pending:
+                logger.warning("[JOB SKIP] pending_id=%s missing", pending_id)
+                return
+
+            sch: Schedule | None = await uow.jobs.get_schedule(pending.schedule_id)
             if not sch or not sch.active:
-                logger.warning("[JOB SKIP] schedule_id=%s inactive/missing", schedule_id)
+                logger.warning("[JOB SKIP] schedule_id=%s inactive/missing", getattr(sch, "id", None))
                 return
 
             user: User = sch.plant.user
             plant: Plant = sch.plant
 
-            emoji = ACTION_EMOJI.get(sch.action, "•")
-            action_text = {
-                ActionType.WATERING: "Время полива",
-                ActionType.FERTILIZING: "Время удобрить",
-                ActionType.REPOTTING: "Время пересадки",
-            }[sch.action]
+            emoji = sch.action.emoji()
+            title = sch.action.title_ru()
+            base_text = f"{emoji} {title}: {plant.name}"
 
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Сделано",  callback_data=RemindCb(action="done", schedule_id=schedule_id).pack())
-            kb.button(text="⏭️ Пропустить", callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack())
-            kb.adjust(2)
 
             try:
-                await bot.send_message(
+                msg = await bot.send_message(
                     user.id,
-                    f"{emoji} {action_text}: {plant.name}",
-                    reply_markup=kb.as_markup(),
+                    base_text,
+                    reply_markup=_build_action_kb_for_pending(pending.id, True),
                 )
-                logger.info("[SEND OK] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action)
+
+                await uow.action_pending_messages.create(
+                    pending_id=pending.id,
+                    chat_id=user.id,
+                    message_id=msg.message_id,
+                    is_owner=True,
+                    share_id=None,
+                    share_member_id=None,
+                )
+                logger.info(
+                    "[SEND OK OWNER] user_id=%s plant_id=%s action=%s pending_id=%s",
+                    user.id, plant.id, sch.action, pending.id,
+                )
             except Exception as e:
-                logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
+                logger.exception("[SEND ERR OWNER] pending_id=%s schedule_id=%s: %s", pending.id, sch.id, e)
+
+
+            try:
+                shares = await uow.share_links.list_links(sch.id)
+            except Exception:
+                shares = []
+                logger.exception("[SHARE LINKS ERR] schedule_id=%s", sch.id)
+
+            owner_mention = (f"@{user.tg_username}" if user.tg_username else f"id{user.id}")
+            sub_text = f"{base_text}\n\n(Уведомление из расписания пользователя {owner_mention})"
+
+            for share in shares or []:
+                if not getattr(share, "is_active", True):
+                    continue
+                try:
+                    members = await uow.share_members.list_active_by_share(share.id)
+                except Exception:
+                    members = []
+                    logger.exception("[SHARE MEMBERS ERR] share_id=%s", share.id)
+
+                for m in members:
+                    if getattr(m, "muted", False):
+                        continue
+
+                    can_complete = (
+                        m.can_complete_override
+                        if m.can_complete_override is not None
+                        else bool(share.allow_complete_default)
+                    )
+
+                    try:
+                        msg = await bot.send_message(
+                            m.subscriber_user_id,
+                            sub_text,
+                            reply_markup=_build_action_kb_for_pending(pending.id, can_complete),
+                        )
+
+                        await uow.action_pending_messages.create(
+                            pending_id=pending.id,
+                            chat_id=m.subscriber_user_id,
+                            message_id=msg.message_id,
+                            is_owner=False,
+                            share_id=share.id,
+                            share_member_id=m.id,
+                        )
+                        logger.info(
+                            "[SEND OK SUB] user_id=%s share_id=%s schedule_id=%s pending_id=%s buttons=%s",
+                            m.subscriber_user_id, share.id, sch.id, pending.id, bool(can_complete),
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            "[SEND ERR SUB] schedule_id=%s user_id=%s share_id=%s pending_id=%s: %s",
+                            sch.id, m.subscriber_user_id, share.id, pending.id, e,
+                        )
+
+            await uow.commit()
 
     finally:
         await bot.session.close()
 
-    await plan_next_for_schedule(schedule_id)
+    await plan_next_for_schedule(sch.id)
 
 
 async def plan_next_for_schedule(
@@ -196,10 +276,10 @@ async def plan_next_for_schedule(
 
             last_dt, last_src = (max(candidates, key=lambda x: x[0]) if candidates else (None, None))
 
-            if _is_interval_type(sch.type):
-                run_at = next_by_interval(last_dt, sch.interval_days, sch.local_time, tz, now_utc)
-            else:
-                run_at = next_by_weekly(
+            run_at = (
+                next_by_interval(last_dt, sch.interval_days, sch.local_time, tz, now_utc)
+                if _is_interval_type(sch.type)
+                else next_by_weekly(
                     last_done_utc=last_dt,
                     last_done_source=last_src,
                     weekly_mask=sch.weekly_mask,
@@ -207,22 +287,42 @@ async def plan_next_for_schedule(
                     tz_name=tz,
                     now_utc=now_utc,
                 )
+            )
         else:
             run_at = run_at_override_utc
+
+        found = await uow.action_pendings.find_by_unique(
+            schedule_id=sch.id,
+            planned_run_at_utc=run_at,
+        )
+        if found:
+            pending_id = found.id
+        else:
+            created = await uow.action_pendings.create(
+                schedule_id=sch.id,
+                plant_id=sch.plant.id,
+                owner_user_id=sch.plant.user.id,
+                action=sch.action,
+                planned_run_at_utc=run_at,
+            )
+            pending_id = created.id if hasattr(created, "id") else int(created)
+
+        await uow.commit()
 
         try:
             loc = pytz.timezone(tz)
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s run_at_local=%s tz=%s",
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s run_at_local=%s tz=%s pending_id=%s",
                 schedule_id, user.id, sch.plant.id, sch.action,
                 run_at.isoformat(),
                 run_at.astimezone(loc).strftime("%Y-%m-%d %H:%M:%S"),
                 tz,
+                pending_id,
             )
         except Exception:
             logger.info(
-                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s tz=%s",
-                schedule_id, user.id, sch.plant.id, sch.action, run_at.isoformat(), tz,
+                "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s tz=%s pending_id=%s",
+                schedule_id, user.id, sch.plant.id, sch.action, run_at.isoformat(), tz, pending_id,
             )
 
     job_id = _job_id(schedule_id)
@@ -236,7 +336,7 @@ async def plan_next_for_schedule(
         trigger="date",
         id=job_id,
         run_date=run_at,
-        args=[schedule_id],
+        args=[pending_id],
         jobstore="default",
         replace_existing=True,
         misfire_grace_time=3600,

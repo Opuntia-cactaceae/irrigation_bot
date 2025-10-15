@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import List, Tuple
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Router, types, F
 from aiogram.fsm.state import StatesGroup, State
@@ -11,8 +13,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import Schedule, Plant, User, ActionType
 from bot.db_repo.schedules import SchedulesRepo
-from bot.db_repo.schedule_shares import ScheduleShareRepo
-from bot.db_repo.schedule_subscriptions import ScheduleSubscriptionsRepo
+
+from bot.handlers.timezone import show_timezone_prompt
 
 settings_router = Router(name="settings_inline")
 
@@ -20,12 +22,11 @@ PREFIX = "settings"
 PAGE_SIZE = 7
 
 
-# ---------- FSM ----------
 class SettingsStates(StatesGroup):
     waiting_sub_code = State()
+    waiting_new_nick = State()
 
 
-# ---------- Utils ----------
 def _slice(items: list, page: int, size: int = PAGE_SIZE):
     total = len(items)
     pages = max(1, (total + size - 1) // size)
@@ -50,12 +51,12 @@ async def create_user_by_tg(tg_id: int) -> User:
         return await uow.users.create(tg_id)
 
 
-# ---------- Public entry ----------
 async def show_settings_menu(target: types.CallbackQuery | types.Message):
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🔗 Поделиться расписанием", callback_data=f"{PREFIX}:share_menu:1"))
-    kb.row(types.InlineKeyboardButton(text="🧩 Подписаться по коду", callback_data=f"{PREFIX}:sub_prompt"))
-    kb.row(types.InlineKeyboardButton(text="📜 Мои подписки", callback_data=f"{PREFIX}:subs_list:1"))
+    kb.row(types.InlineKeyboardButton(text="👤 Пользователь", callback_data=f"{PREFIX}:user"))
+    kb.row(types.InlineKeyboardButton(text="🔗 Поделиться расписанием", callback_data=f"{PREFIX}:share_wizard:start"))
+    kb.row(types.InlineKeyboardButton(text="🔗 Мои коды доступа", callback_data="codes:root"))
+    kb.row(types.InlineKeyboardButton(text="📬 Подписки", callback_data=f"{PREFIX}:subs"))
     kb.row(types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"))
 
     text = "⚙️ <b>Настройки</b>\nВыберите действие:"
@@ -66,242 +67,6 @@ async def show_settings_menu(target: types.CallbackQuery | types.Message):
         await target.answer(text, reply_markup=kb.as_markup())
 
 
-# ---------- SHARE: список моих расписаний ----------
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_menu:"))
-async def on_share_menu(cb: types.CallbackQuery):
-    # settings:share_menu:<page>
-    try:
-        page = int(cb.data.split(":")[2])
-    except Exception:
-        page = 1
-
-    tg_id = cb.from_user.id
-    # собираем через репозитории:
-    async with new_uow() as uow:
-        me = await uow.users.get(tg_id)
-        plants = await uow.plants.list_by_user(me.id)
-
-        # плоский список активных расписаний с именами растений
-        items: List[dict] = []
-        for p in plants:
-            sch_list = await uow.schedules.list_by_plant(p.id)
-            for s in sch_list:
-                if not getattr(s, "active", True):
-                    continue
-                items.append({
-                    "schedule": s,
-                    "plant": p,
-                })
-
-    if not items:
-        kb = InlineKeyboardBuilder()
-        kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:menu"))
-        await cb.message.edit_text("Пока нет активных расписаний.", reply_markup=kb.as_markup())
-        return await cb.answer()
-
-    page_items, page, pages, _ = _slice(items, page)
-
-    lines = ["🫂 <b>Поделиться расписанием</b>", "Нажмите «Поделиться №…» напротив нужного пункта.", ""]
-    kb = InlineKeyboardBuilder()
-    for i, it in enumerate(page_items, start=1):
-        s: Schedule = it["schedule"]
-        p: Plant = it["plant"]
-        t = s.local_time.strftime("%H:%M")
-        when = (f"каждые {s.interval_days} дн в {t}" if s.type == "interval" else f"{_weekly_mask_to_text(s.weekly_mask or 0)} в {t}")
-        custom = f" — {s.custom_title}" if s.action == ActionType.CUSTOM and s.custom_title else ""
-        lines.append(f"{i}. {p.name}{custom} · {when} {_action_emoji(s.action)}")
-        kb.row(
-            types.InlineKeyboardButton(
-                text=f"🔗 Поделиться №{i}", callback_data=f"{PREFIX}:share_make:{s.id}:{page}"
-            )
-        )
-
-    kb.row(
-        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:share_menu:{max(1, page-1)}"),
-        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:share_menu:{min(pages, page+1)}"),
-    )
-    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:menu"))
-
-    await cb.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:share_make:"))
-async def on_share_make(cb: types.CallbackQuery):
-    # settings:share_make:<schedule_id>:<return_page>
-    parts = cb.data.split(":")
-    try:
-        schedule_id = int(parts[2]); return_page = int(parts[3])
-    except Exception:
-        await cb.answer("Не удалось создать код", show_alert=True)
-        return
-
-    tg_id = cb.from_user.id
-    async with new_uow() as uow:
-        me = await uow.users.get(tg_id)
-        # проверим, что расписание моё
-        sch = await uow.schedules.get(schedule_id)
-        if not sch:
-            await cb.answer("Расписание не найдено", show_alert=True)
-            return
-        plant = await uow.plants.get(sch.plant_id)
-        if not plant or plant.user_id != me.id:
-            await cb.answer("Недоступно: не твоё расписание", show_alert=True)
-            return
-
-        share_repo = ScheduleShareRepo(uow.session)
-        share = await share_repo.create_share(
-            owner_user_id=me.id,
-            schedule_id=sch.id,
-            note=None,
-            allow_complete_by_subscribers=True,
-            expires_at_utc=None,
-        )
-        await uow.commit()
-
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="⬅️ К списку", callback_data=f"{PREFIX}:share_menu:{return_page}"))
-    kb.row(types.InlineKeyboardButton(text="↩️ Настройки", callback_data=f"{PREFIX}:menu"))
-
-    text = (
-        "✅ Код создан.\n\n"
-        f"<b>Код:</b> <code>{share.code}</code>\n\n"
-        "Передай код — по нему можно подписаться на напоминания.\n"
-        "Подписчик по умолчанию может отмечать «выполнено»."
-    )
-    await cb.message.edit_text(text, reply_markup=kb.as_markup())
-    await cb.answer("Код готов")
-
-
-# ---------- SUBSCRIBE: ввод кода ----------
-@settings_router.callback_query(F.data == f"{PREFIX}:sub_prompt")
-async def on_sub_prompt(cb: types.CallbackQuery, state: FSMContext):
-    await state.set_state(SettingsStates.waiting_sub_code)
-    kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:menu"))
-    await cb.message.edit_text("🧩 Введите код подписки сообщением в чат.", reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-@settings_router.message(SettingsStates.waiting_sub_code, F.text)
-async def on_subscribe_enter_code(m: types.Message, state: FSMContext):
-    code = (m.text or "").strip().replace(" ", "")
-    tg_id = m.from_user.id
-
-    async with new_uow() as uow:
-        me = await uow.users.get(tg_id)
-        sub_repo = ScheduleSubscriptionsRepo(uow.session)
-        try:
-            sub = await sub_repo.subscribe_with_code(subscriber_user_id=me.id, code=code)
-            await uow.commit()
-        except ValueError as e:
-            await m.answer(f"❌ {e}")
-            return
-
-        sch = await uow.schedules.get(sub.schedule_id)
-        plant = await uow.plants.get(sch.plant_id) if sch else None
-
-    if sch and plant:
-        t = sch.local_time.strftime("%H:%M")
-        when = (f"каждые {sch.interval_days} дн в {t}"
-                if sch.type == "interval"
-                else f"{_weekly_mask_to_text(sch.weekly_mask or 0)} в {t}")
-        custom = f" — {sch.custom_title}" if (sch.action == ActionType.CUSTOM and sch.custom_title) else ""
-        await m.answer(f"✅ Подписка оформлена:\n<b>{plant.name}</b>{custom} · {when}")
-    else:
-        await m.answer("✅ Подписка оформлена.")
-
-    await state.clear()
-    await show_settings_menu(m)
-
-
-# ---------- SUBSCRIPTIONS: список и удаление ----------
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_list:"))
-async def on_subs_list(cb: types.CallbackQuery):
-    try:
-        page = int(cb.data.split(":")[2])
-    except Exception:
-        page = 1
-
-    tg_id = cb.from_user.id
-    async with new_uow() as uow:
-        me = await uow.users.get(tg_id)
-        subs_repo = ScheduleSubscriptionsRepo(uow.session)
-        subs = list(await subs_repo.list_by_user(me.id))
-
-        items: List[dict] = []
-        for s in subs:
-            sch = await uow.schedules.get(s.schedule_id)
-            if not sch:
-                continue
-            plant = await uow.plants.get(sch.plant_id)
-            if not plant:
-                continue
-            items.append({"sub": s, "sch": sch, "plant": plant})
-
-    if not items:
-        kb = InlineKeyboardBuilder()
-        kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:menu"))
-        await cb.message.edit_text("У тебя нет подписок.", reply_markup=kb.as_markup())
-        return await cb.answer()
-
-    page_items, page, pages, _ = _slice(items, page)
-    lines = ["📜 <b>Мои подписки</b>", "Нажмите «Удалить №…», чтобы отписаться.", ""]
-    kb = InlineKeyboardBuilder()
-
-    for i, it in enumerate(page_items, start=1):
-        s = it["sch"]; p = it["plant"]; sub = it["sub"]
-        t = s.local_time.strftime("%H:%M")
-        when = (f"каждые {s.interval_days} дн в {t}"
-                if s.type == "interval"
-                else f"{_weekly_mask_to_text(s.weekly_mask or 0)} в {t}")
-        custom = f" — {s.custom_title}" if (s.action == ActionType.CUSTOM and s.custom_title) else ""
-        lines.append(f"{i}. {p.name}{custom} · {when}")
-        kb.row(types.InlineKeyboardButton(text=f"🗑 Удалить №{i}",
-                                          callback_data=f"{PREFIX}:subs_del:{sub.id}:{page}"))
-
-    kb.row(
-        types.InlineKeyboardButton(text="◀️", callback_data=f"{PREFIX}:subs_list:{max(1, page-1)}"),
-        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
-        types.InlineKeyboardButton(text="▶️", callback_data=f"{PREFIX}:subs_list:{min(pages, page+1)}"),
-    )
-    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{PREFIX}:menu"))
-
-    await cb.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
-    await cb.answer()
-
-
-@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_del:"))
-async def on_subs_delete(cb: types.CallbackQuery):
-    # settings:subs_del:<subscription_id>:<return_page>
-    parts = cb.data.split(":")
-    try:
-        sub_id = int(parts[2]); return_page = int(parts[3])
-    except Exception:
-        await cb.answer("Не удалось удалить", show_alert=True)
-        return
-
-    tg_id = cb.from_user.id
-    async with new_uow() as uow:
-        me = await uow.users.get(tg_id)
-        # проверим, что подписка моя
-        subs_repo = ScheduleSubscriptionsRepo(uow.session)
-        sub = await subs_repo.get(sub_id)
-        if not sub or sub.subscriber_user_id != me.id:
-            await cb.answer("Недоступно", show_alert=True)
-            return
-        await subs_repo.delete(sub_id)
-        await uow.commit()
-
-    await cb.answer("Подписка удалена")
-    await on_subs_list(
-        types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message,
-                            data=f"{PREFIX}:subs_list:{return_page}")
-    )
-
-
-# ---------- базовые ----------
 @settings_router.callback_query(F.data == f"{PREFIX}:menu")
 async def on_settings_menu(cb: types.CallbackQuery):
     await show_settings_menu(cb)
@@ -309,3 +74,137 @@ async def on_settings_menu(cb: types.CallbackQuery):
 @settings_router.callback_query(F.data == f"{PREFIX}:noop")
 async def on_noop(cb: types.CallbackQuery):
     await cb.answer()
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user")
+async def on_user_root(cb: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=f"{PREFIX}:user:tz"))
+    kb.row(types.InlineKeyboardButton(text="📝 Ник", callback_data=f"{PREFIX}:user:nick"))
+    kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:menu"))
+    await cb.message.edit_text("👤 <b>Пользователь</b>\nВыберите раздел:", reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:tz")
+async def on_user_timezone(cb: types.CallbackQuery):
+    async with new_uow() as uow:
+        user = await uow.users.get(cb.from_user.id)
+
+    tz_name = getattr(user, "tz", None) or "UTC"
+    try:
+        now_local = datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        tz_name = "UTC"
+        now_local = datetime.now(ZoneInfo("UTC"))
+
+    text = (
+        "🕒 <b>Таймзона</b>\n"
+        f"Текущая таймзона: <code>{tz_name}</code>\n"
+        f"Сейчас там: <code>{now_local:%Y-%m-%d %H:%M}</code>"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=f"{PREFIX}:user:tz:change"),
+        types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:user")
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:tz:change")
+async def on_user_timezone_change(cb: types.CallbackQuery, state: FSMContext):
+    if show_timezone_prompt:
+        await show_timezone_prompt(cb, state)
+    else:
+        await cb.answer("Не удалось запустить смену таймзоны", show_alert=True)
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick")
+async def on_user_nick(cb: types.CallbackQuery):
+    async with new_uow() as uow:
+        user = await uow.users.get(cb.from_user.id)
+
+    stored_nick = getattr(user, "tg_username", None) or "—"
+    tg_username = cb.from_user.username or "—"
+
+    text = (
+        "📝 <b>Ник</b>\n"
+        f"Сохранённый ник в боте: <code>{stored_nick}</code>\n"
+        f"Ваш Telegram: <code>{tg_username}</code>\n\n"
+        "Можно хранить свой ник в боте — он не обязан совпадать с Telegram."
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=f"{PREFIX}:user:nick:change"),
+        types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:user")
+    )
+    await cb.message.edit_text(text, reply_markup=kb.as_markup())
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick:change")
+async def on_user_nick_change(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🚫 Отмена", callback_data=f"{PREFIX}:user:nick:cancel"))
+    prompt = await cb.message.answer(
+        "Введите новый ник (1–32 символа).",
+        reply_markup=kb.as_markup()
+    )
+
+    await state.set_state(SettingsStates.waiting_new_nick)
+    await state.update_data(
+        nick_prompt_chat_id=prompt.chat.id,
+        nick_prompt_message_id=prompt.message_id,
+    )
+
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data == f"{PREFIX}:user:nick:cancel")
+async def on_user_nick_cancel(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    await state.clear()
+    await on_user_nick(cb)
+    await cb.answer("Отменено")
+
+
+@settings_router.message(SettingsStates.waiting_new_nick, F.text)
+async def on_user_nick_input(m: types.Message, state: FSMContext):
+    raw = (m.text or "").strip()
+
+    if not (1 <= len(raw) <= 32):
+        await m.answer("Ник должен быть длиной от 1 до 32 символов. Попробуйте ещё раз или нажмите «Отмена».")
+        return
+
+    async with new_uow() as uow:
+        await uow.users.set_username(m.from_user.id, raw)
+        await uow.commit()
+
+    data = await state.get_data()
+    prompt_chat_id = data.get("nick_prompt_chat_id")
+    prompt_message_id = data.get("nick_prompt_message_id")
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await m.bot.edit_message_reply_markup(
+                chat_id=prompt_chat_id,
+                message_id=prompt_message_id,
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
+    await state.clear()
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"{PREFIX}:menu"))
+    await m.answer(f"Готово! Ник обновлён: <b>{raw}</b>", parse_mode="HTML", reply_markup=kb.as_markup())

@@ -1,4 +1,4 @@
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Iterable, Dict, List
 from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,3 +46,24 @@ class PlantsRepo(BaseRepo):
 
     async def delete(self, plant_id: int) -> None:
         await self.session.execute(delete(Plant).where(Plant.id == plant_id))
+
+    async def list_by_ids(self, ids: Iterable[int]) -> List[Plant]:
+        """
+        Вернуть растения по списку id одним запросом.
+        """
+        ids_set = {int(x) for x in ids}
+        if not ids_set:
+            return []
+        q = select(Plant).where(Plant.id.in_(ids_set))
+        return list((await self.session.execute(q)).scalars().all())
+
+    async def names_by_ids(self, ids: Iterable[int]) -> Dict[int, str]:
+        """
+        Лёгкая выборка id->name (если где-то нужно только имя без загрузки связей).
+        """
+        ids_set = {int(x) for x in ids}
+        if not ids_set:
+            return {}
+        q = select(Plant.id, Plant.name).where(Plant.id.in_(ids_set))
+        rows = (await self.session.execute(q)).all()
+        return {pid: name for pid, name in rows}

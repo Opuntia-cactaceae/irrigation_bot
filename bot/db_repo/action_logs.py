@@ -16,6 +16,9 @@ from bot.db_repo.models import (
     Plant,
     Schedule,
     User,
+    ShareLink,
+    ShareMember,
+    ShareMemberStatus,
 )
 from .base import BaseRepo
 
@@ -216,3 +219,65 @@ class ActionLogsRepo(BaseRepo):
         if not row:
             return None, None
         return row[0], row[1]
+
+    async def list_shared_for_subscriber(
+            self,
+            subscriber_user_id: int,
+            *,
+            limit: int = 50,
+            offset: int = 0,
+            action: ActionType | None = None,
+            status: ActionStatus | None = None,
+            since: datetime | None = None,
+            until: datetime | None = None,
+            with_relations: bool = False,
+    ) -> Sequence[ActionLog]:
+        """
+        Возвращает логи из расшаренных расписаний, доступные подписчику.
+        Условия видимости:
+          - есть активное членство в шаре (ShareMember.status == ACTIVE)
+          - сам шар активен (ShareLink.is_active == True)
+          - политика видимости истории: COALESCE(ShareMember.show_history_override, ShareLink.show_history_default) == True
+        Фильтры action/status/since/until применяются к ActionLog.
+        """
+        # базовые условия видимости
+        conds = [
+            ActionLog.share_id.is_not(None),
+            ShareLink.id == ActionLog.share_id,
+            ShareLink.is_active.is_(True),
+            ShareMember.share_id == ShareLink.id,
+            ShareMember.subscriber_user_id == subscriber_user_id,
+            ShareMember.status == ShareMemberStatus.ACTIVE,
+            func.coalesce(ShareMember.show_history_override, ShareLink.show_history_default).is_(True),
+        ]
+
+        # фильтры по самим логам
+        if action:
+            conds.append(ActionLog.action == action)
+        if status:
+            conds.append(ActionLog.status == status)
+        if since:
+            conds.append(ActionLog.done_at_utc >= since)
+        if until:
+            conds.append(ActionLog.done_at_utc < until)
+
+        q = (
+            select(ActionLog)
+            .join(ShareLink, ShareLink.id == ActionLog.share_id)
+            .join(ShareMember, and_(
+                ShareMember.share_id == ShareLink.id,
+                ShareMember.subscriber_user_id == subscriber_user_id,
+            ))
+            .where(and_(*conds))
+            .order_by(desc(ActionLog.done_at_utc))
+            .limit(limit)
+            .offset(offset)
+        )
+
+        if with_relations:
+            q = q.options(
+                selectinload(ActionLog.plant),
+                selectinload(ActionLog.schedule),
+            )
+
+        return (await self.session.execute(q)).scalars().all()
