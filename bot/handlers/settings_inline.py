@@ -14,10 +14,7 @@ from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import Schedule, Plant, User, ActionType
 from bot.db_repo.schedules import SchedulesRepo
 
-try:
-    from .timezone import show_timezone_prompt
-except Exception:
-    show_timezone_prompt = None
+from bot.handlers.timezone import show_timezone_prompt
 
 settings_router = Router(name="settings_inline")
 
@@ -147,18 +144,34 @@ async def on_user_nick(cb: types.CallbackQuery):
 
 @settings_router.callback_query(F.data == f"{PREFIX}:user:nick:change")
 async def on_user_nick_change(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     kb = InlineKeyboardBuilder()
     kb.row(types.InlineKeyboardButton(text="🚫 Отмена", callback_data=f"{PREFIX}:user:nick:cancel"))
-    await cb.message.edit_text(
+    prompt = await cb.message.answer(
         "Введите новый ник (1–32 символа).",
         reply_markup=kb.as_markup()
     )
+
     await state.set_state(SettingsStates.waiting_new_nick)
+    await state.update_data(
+        nick_prompt_chat_id=prompt.chat.id,
+        nick_prompt_message_id=prompt.message_id,
+    )
+
     await cb.answer()
 
 
 @settings_router.callback_query(F.data == f"{PREFIX}:user:nick:cancel")
 async def on_user_nick_cancel(cb: types.CallbackQuery, state: FSMContext):
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
     await state.clear()
     await on_user_nick(cb)
     await cb.answer("Отменено")
@@ -176,9 +189,21 @@ async def on_user_nick_input(m: types.Message, state: FSMContext):
         await uow.users.set_username(m.from_user.id, raw)
         await uow.commit()
 
-    await m.answer(f"Готово! Ник обновлён: <b>{raw}</b>", parse_mode="HTML")
+    data = await state.get_data()
+    prompt_chat_id = data.get("nick_prompt_chat_id")
+    prompt_message_id = data.get("nick_prompt_message_id")
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await m.bot.edit_message_reply_markup(
+                chat_id=prompt_chat_id,
+                message_id=prompt_message_id,
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
     await state.clear()
 
-    fake_cb = types.CallbackQuery(id="0", from_user=m.from_user, chat_instance="", message=m)
-    fake_cb.data = f"{PREFIX}:user:nick"
-    await on_user_nick(fake_cb)
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"{PREFIX}:menu"))
+    await m.answer(f"Готово! Ник обновлён: <b>{raw}</b>", parse_mode="HTML", reply_markup=kb.as_markup())

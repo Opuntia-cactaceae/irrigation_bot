@@ -9,7 +9,7 @@ import pytz
 from aiogram import Router, types, F
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.db_repo.models import ActionType, ActionStatus, User
+from bot.db_repo.models import ActionType, ActionStatus, User, ActionSource
 from bot.db_repo.unit_of_work import new_uow
 from bot.services.cal_shared import (
     CODE_TO_ACTION as ACT_MAP,
@@ -31,6 +31,7 @@ class HistoryItem:
     schedule_id: Optional[int]
     plant_name: str
     is_shared: bool = False
+    by_subscriber: bool = False
 
 
 @dataclass
@@ -115,6 +116,10 @@ async def _get_history_week(
                 schedule_id=getattr(lg, "schedule_id", None),
                 plant_name=(getattr(lg, "plant_name_at_time", None) or "(без растения)"),
                 is_shared=bool(getattr(lg, "share_id", None)),
+                by_subscriber=(
+                        getattr(lg, "source", None) == ActionSource.SHARED
+                        or bool(getattr(lg, "share_member_id", None))
+                ),
             )
             bucket.setdefault(d, []).append(item)
 
@@ -191,7 +196,7 @@ def _kb_history(
         mark = "✓ " if active and code != "all" else ""
         kb.button(
             text=f"{mark}{text}",
-            callback_data=f"{PREFIX}:act:hist:{week_offset}:{code}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:act:hist:{week_offset}:{code}:{plant_id or 0}:{int(shared_mode)}",
         )
     kb.adjust(4)
 
@@ -213,11 +218,11 @@ def _kb_history(
     kb.row(
         types.InlineKeyboardButton(
             text="📌 Ближайшие",
-            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{(2 if shared_only else 0)}",
+            callback_data=f"{PREFIX}:feed:upc:1:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{(2 if shared_mode else 0)}",
         ),
         types.InlineKeyboardButton(
             text="📜 История ✓",
-            callback_data=f"{PREFIX}:feed:hist:{week_offset}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:feed:hist:{week_offset}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_mode)}",
         ),
     )
 
@@ -230,12 +235,12 @@ def _kb_history(
     kb.row(
         types.InlineKeyboardButton(
             text="◀️",
-            callback_data=f"{PREFIX}:page:hist:{prev_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:page:hist:{prev_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_mode)}",
         ),
         types.InlineKeyboardButton(text=f"Неделя {label}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
             text="▶️" if has_next else "⏺",
-            callback_data=f"{PREFIX}:page:hist:{next_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+            callback_data=f"{PREFIX}:page:hist:{next_off}:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_mode)}",
         ),
     )
 
@@ -243,7 +248,7 @@ def _kb_history(
         kb.row(
             types.InlineKeyboardButton(
                 text="🏠 К текущей неделе",
-                callback_data=f"{PREFIX}:page:hist:0:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_only)}",
+                callback_data=f"{PREFIX}:page:hist:0:{ACT_TO_CODE.get(action)}:{plant_id or 0}:{int(shared_mode)}",
             )
         )
 
@@ -294,6 +299,7 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
             raw_status = getattr(it, "status", ActionStatus.DONE)
             status = raw_status if isinstance(raw_status, ActionStatus) else ActionStatus.DONE
             status_emoji = STATUS_TO_EMOJI.get(status, "✅")
+            by_subscriber_mark = " ✍️" if getattr(it, "by_subscriber", False) else ""  # ⬅️ эмодзи
 
             t = it.dt_local.strftime("%H:%M")
 
@@ -302,6 +308,9 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
             sch = it.schedule_id or 0
 
             shared_mark = " 👥" if getattr(it, "is_shared", False) else ""
+            lines.append(
+                f"  {t} {status_emoji}{by_subscriber_mark} {act_emoji}{shared_mark} {plant_lbl} (id:{pid}, sch:{sch})"
+            )
 
             lines.append(f"  {t} {status_emoji} {act_emoji}{shared_mark} {plant_lbl} (id:{pid}, sch:{sch})")
     return "\n".join(lines).lstrip()

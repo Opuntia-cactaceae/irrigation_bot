@@ -275,3 +275,46 @@ class ActionLog(Base):
 
     share: Mapped[Optional["ShareLink"]] = relationship()
     share_member: Mapped[Optional["ShareMember"]] = relationship()
+
+class ActionPending(Base):
+    __tablename__ = "action_pendings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("schedules.id", ondelete="CASCADE"), index=True
+    )
+    plant_id: Mapped[int] = mapped_column(
+        ForeignKey("plants.id", ondelete="CASCADE"), index=True
+    )
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+
+    action: Mapped[ActionType] = mapped_column(Enum(ActionType), nullable=False)
+    planned_run_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    resolved_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_by_log_id: Mapped[int | None] = mapped_column(ForeignKey("action_logs.id", ondelete="SET NULL"), nullable=True)
+    resolved_status: Mapped[ActionStatus | None] = mapped_column(Enum(ActionStatus), nullable=True)
+    resolved_source: Mapped[ActionSource | None] = mapped_column(Enum(ActionSource), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "planned_run_at_utc", name="uq_pending_sched_run_at"),
+    )
+
+class ActionPendingMessage(Base):
+    __tablename__ = "action_pending_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pending_id: Mapped[int] = mapped_column(
+        ForeignKey("action_pendings.id", ondelete="CASCADE"), index=True
+    )
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_owner: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    share_id: Mapped[int | None] = mapped_column(ForeignKey("share_links.id", ondelete="SET NULL"), index=True)
+    share_member_id: Mapped[int | None] = mapped_column(ForeignKey("share_members.id", ondelete="SET NULL"), index=True)
