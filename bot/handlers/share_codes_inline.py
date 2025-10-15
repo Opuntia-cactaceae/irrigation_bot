@@ -322,7 +322,12 @@ async def on_code_delete(cb: types.CallbackQuery):
 
 @codes_router.callback_query(F.data.startswith(f"{PREFIX}:delete_confirm:"))
 async def on_code_delete_confirm(cb: types.CallbackQuery):
-    code = cb.data.split(":")[3]
+    parts = cb.data.split(":")
+    # было: code = cb.data.split(":")[3]
+    if len(parts) < 3:
+        await cb.answer("Некорректные данные кнопки.", show_alert=True)
+        return
+    code = parts[2]
 
     async with new_uow() as uow:
         try:
