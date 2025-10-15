@@ -1,8 +1,10 @@
 # bot/services/rules.py
 from __future__ import annotations
-from datetime import datetime, time, timedelta
-from bot.db_repo.models import ActionSource
-from typing import Optional
+
+from dataclasses import dataclass
+from datetime import datetime, time, timedelta, date
+from bot.db_repo.models import ActionSource, ShareMember, ShareMemberStatus, ShareLink
+from typing import Optional, List
 import pytz
 from pytz import AmbiguousTimeError, NonExistentTimeError
 
@@ -116,3 +118,31 @@ def next_by_weekly(
             return _next_weekly_after(next1, weekly_mask, local_t, tz_name)
 
     return next1
+
+def _safe_tz(name: Optional[str]) -> pytz.BaseTzInfo:
+    try:
+        return pytz.timezone(name or "UTC")
+    except Exception:
+        return pytz.UTC
+
+
+def _localize_day_bounds(tz: pytz.BaseTzInfo, d: date) -> tuple[datetime, datetime]:
+    start_naive = datetime.combine(d, time.min)
+    end_naive = datetime.combine(d, time.max)
+    start_local = tz.localize(start_naive)
+    end_local = tz.localize(end_naive)
+    return start_local, end_local
+
+def compute_window(mode_str: str, today_local: date, page: int, days_per_page: int,
+                   tz: pytz.BaseTzInfo) -> tuple[date, date, datetime, datetime]:
+    if mode_str == "upc":
+        start_local_day = today_local + timedelta(days=(page - 1) * days_per_page)
+        end_local_day = start_local_day + timedelta(days=days_per_page - 1)
+    else:
+        end_local_day = today_local - timedelta(days=(page - 1) * days_per_page + 1)
+        start_local_day = end_local_day - timedelta(days=days_per_page - 1)
+
+    start_local_dt, _ = _localize_day_bounds(tz, start_local_day)
+    _, end_local_dt = _localize_day_bounds(tz, end_local_day)
+    return start_local_day, end_local_day, start_local_dt.astimezone(pytz.UTC), end_local_dt.astimezone(pytz.UTC)
+

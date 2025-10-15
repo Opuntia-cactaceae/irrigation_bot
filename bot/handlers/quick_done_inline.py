@@ -10,59 +10,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType, ScheduleType, ActionSource
 from bot.scheduler import manual_done_and_reschedule, _calc_next_run_utc
+from bot.services.cal_shared import format_schedule_line
 
 router = Router(name="quick_done_inline")
 PREFIX = "qdone"
 
-WEEK_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-
-
-def _as_value(x):
-    return getattr(x, "value", x)
-
-
-def _fmt_schedule(s) -> str:
-    s_type = _as_value(getattr(s, "type", None))
-    if s_type == ScheduleType.INTERVAL:
-        return f"каждые {getattr(s, 'interval_days', '?')} дн в {s.local_time.strftime('%H:%M')}"
-    else:
-        mask = int(getattr(s, "weekly_mask", 0) or 0)
-        days = [lbl for i, lbl in enumerate(WEEK_RU) if mask & (1 << i)]
-        days_txt = ",".join(days) if days else "—"
-        return f"{days_txt} в {s.local_time.strftime('%H:%M')}"
-
-def _fmt_date_label(dt_local: datetime) -> str:
-    """
-    Возвращает дату в формате: "Ср 09.10"
-    """
-    dow = WEEK_RU[dt_local.weekday()]
-    return f"{dow} {dt_local.day:02d}.{dt_local.month:02d}"
-
-
-def _fmt_tail_for_line(
-    *,
-    s_type,
-    weekly_mask: int | None,
-    interval_days: int | None,
-    dt_local: datetime,
-) -> str:
-    s_val = getattr(s_type, "value", s_type)
-    interval_val = getattr(ScheduleType.INTERVAL, "value", ScheduleType.INTERVAL)
-
-    if s_val == ScheduleType.INTERVAL or s_val == interval_val:
-        d = int(interval_days or 0)
-        return f"каждые {d} дн" if d > 0 else ""
-
-    # weekly
-    mask = int(weekly_mask or 0)
-    if mask == 0:
-        return ""
-
-    days = [lbl for i, lbl in enumerate(WEEK_RU) if mask & (1 << i)]
-    if len(days) == 1 and WEEK_RU[dt_local.weekday()] == days[0]:
-        return ""
-
-    return ",".join(days)
 
 def _as_action(x) -> ActionType | None:
     return ActionType.from_any(x)
@@ -106,7 +58,6 @@ async def _collect_upcoming_for_user(user_tg_id: int, limit: int = 15) -> List[D
                     "plant_name": p.name,
                     "action": sch.action,
                     "user_tz": user_tz,
-                    "desc": _fmt_schedule(sch),
                     "s_type": getattr(sch, "type", None),
                     "weekly_mask": int(getattr(sch, "weekly_mask", 0) or 0),
                     "interval_days": getattr(sch, "interval_days", None),
@@ -146,22 +97,17 @@ async def show_quick_done_menu(target: types.Message | types.CallbackQuery):
 
     for idx, it in enumerate(items, start=1):
         at = ActionType.from_any(it["action"])
-        emoji = at.emoji() if at else "•"
 
-        date_lbl = _fmt_date_label(it["dt_local"])
-        t_str = it["dt_local"].strftime("%H:%M")
-
-        tail = _fmt_tail_for_line(
+        line = format_schedule_line(
+            idx=idx,
+            plant_name=it["plant_name"],
+            action=it["action"],
+            dt_local=it["dt_local"],
             s_type=it.get("s_type"),
             weekly_mask=it.get("weekly_mask"),
             interval_days=it.get("interval_days"),
-            dt_local=it["dt_local"],
+            mode="quick_done",
         )
-
-        if tail:
-            line = f"{idx:>2}. {date_lbl} {t_str} {emoji} {it['plant_name']} {tail}"
-        else:
-            line = f"{idx:>2}. {date_lbl} {t_str} {emoji} {it['plant_name']}"
         lines.append(line)
 
         kb.row(

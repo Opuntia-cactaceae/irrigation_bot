@@ -1,5 +1,5 @@
 # bot/db_repo/schedules.py
-from typing import Optional, Sequence, List
+from typing import Optional, Sequence, List, Iterable
 from datetime import time as dtime
 
 from sqlalchemy import select, delete, update, and_
@@ -11,7 +11,6 @@ from .models import (
     ScheduleType,
     Plant,
     User,
-    ScheduleSubscription,
 )
 
 
@@ -70,6 +69,33 @@ class SchedulesRepo:
         )
         return list((await self.session.execute(q)).scalars().all())
 
+    async def list_by_ids(self, ids: Iterable[int]) -> List[Schedule]:
+        """
+        Вернуть расписания по списку id.
+        """
+        ids_set = {int(x) for x in ids}
+        if not ids_set:
+            return []
+        q = select(Schedule).where(Schedule.id.in_(ids_set))
+        return list((await self.session.execute(q)).scalars().all())
+
+    async def list_active_by_ids(
+            self,
+            ids: Iterable[int],
+            action: Optional[ActionType] = None,
+    ) -> List[Schedule]:
+        """
+        Вернуть ТОЛЬКО активные расписания по списку id, опционально отфильтровав по action.
+        """
+        ids_set = {int(x) for x in ids}
+        if not ids_set:
+            return []
+        conds = [Schedule.id.in_(ids_set), Schedule.active.is_(True)]
+        if action is not None:
+            conds.append(Schedule.action == action)
+        q = select(Schedule).where(and_(*conds))
+        return list((await self.session.execute(q)).scalars().all())
+
     # ---------- WRITE ----------
 
     async def create(
@@ -82,7 +108,6 @@ class SchedulesRepo:
         interval_days: Optional[int] = None,
         weekly_mask: Optional[int] = None,
         active: bool = True,
-        # кастом-действие:
         custom_title: Optional[str] = None,
         custom_note_template: Optional[str] = None,
     ) -> Schedule:

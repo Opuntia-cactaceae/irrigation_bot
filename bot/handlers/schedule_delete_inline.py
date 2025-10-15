@@ -1,6 +1,7 @@
 # bot/handlers/schedule_delete_inline.py
 from __future__ import annotations
 
+from datetime import datetime, time, date
 from typing import List, Dict, Any, Optional
 
 from aiogram import Router, types, F
@@ -8,7 +9,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionType
-from bot.scheduler import scheduler as aps  # для снятия APS job
+from bot.scheduler import scheduler as aps
+from bot.services.cal_shared import format_schedule_line
 
 delete_router = Router(name="schedule_delete_inline")
 PREFIX = "sdel"
@@ -33,18 +35,9 @@ def _slice(items, page: int, size: int):
 def _job_id(schedule_id: int) -> str:
     return f"sch:{schedule_id}"
 
-
-def _fmt_schedule(s) -> str:
-    """Короткая строка о расписании."""
-    s_type = getattr(s.type, "value", s.type)
-    if s_type == "interval":
-        return f"⏱ каждые {getattr(s,'interval_days','?')} дн в {s.local_time.strftime('%H:%M')}"
-    else:
-        mask = int(getattr(s, "weekly_mask", 0) or 0)
-        days = [lbl for i, lbl in enumerate(WEEK_EMOJI) if mask & (1 << i)]
-        days_txt = ",".join(days) if days else "—"
-        return f"🗓 {days_txt} в {s.local_time.strftime('%H:%M')}"
-
+def _dt_for_local_time(t: time) -> datetime:
+    """Подставляем сегодняшнюю дату к локальному времени (для совместимости с сигнатурой)."""
+    return datetime.combine(date.today(), t)
 
 async def _collect_all_schedules(user_tg_id: int) -> List[Dict[str, Any]]:
     """Все расписания пользователя, с именем растения и эмодзи действия."""
@@ -63,15 +56,16 @@ async def _collect_all_schedules(user_tg_id: int) -> List[Dict[str, Any]]:
                 "plant_id": p.id,
                 "plant_name": p.name,
                 "action": s.action,
-                "desc": _fmt_schedule(s),
+                "type": getattr(s, "type", None),
+                "weekly_mask": getattr(s, "weekly_mask", None),
+                "interval_days": getattr(s, "interval_days", None),
+                "local_time": getattr(s, "local_time", None),
             })
 
-    # свежие сверху
     result.sort(key=lambda x: x["id"], reverse=True)
     return result
 
 
-# -------- screens -------- #
 async def show_delete_menu(target: types.Message | types.CallbackQuery, page: int = 1):
     """Нумерованный список в тексте + кнопки «Удалить №…»."""
     if isinstance(target, types.CallbackQuery):
@@ -105,8 +99,18 @@ async def show_delete_menu(target: types.Message | types.CallbackQuery, page: in
 
     start_num = (page - 1) * PAGE_SIZE + 1
     for idx, it in enumerate(page_items, start=start_num):
-        emoji = ACTION_EMOJI.get(it["action"], "•")
-        lines.append(f"{idx:>2}. {emoji} {it['plant_name']} · {it['desc']}")
+        dt_local = _dt_for_local_time(it["local_time"])
+        line = format_schedule_line(
+            idx=idx,
+            plant_name=it["plant_name"],
+            action=it["action"],
+            dt_local=dt_local,
+            s_type=it["type"],
+            weekly_mask=it["weekly_mask"],
+            interval_days=it["interval_days"],
+            mode="delete",
+        )
+        lines.append(line)
         kb.row(
             types.InlineKeyboardButton(
                 text=f"🗑 Удалить №{idx}",
@@ -141,9 +145,18 @@ async def _screen_confirm(cb: types.CallbackQuery, sch_id: int, page: int):
             s = await uow.schedules.get(sch_id)
             if s:
                 p = await uow.plants.get(getattr(s, "plant_id", None))
-                plant = getattr(p, "name", f"#{getattr(s, 'plant_id', '?')}")
-                emoji = ACTION_EMOJI.get(getattr(s, "action", None), "•")
-                desc_line = f"{emoji} {plant} · {_fmt_schedule(s)}"
+                plant_name = getattr(p, "name", f"#{getattr(s, 'plant_id', '?')}")
+                dt_local = _dt_for_local_time(getattr(s, "local_time"))
+                desc_line = format_schedule_line(
+                    idx=None,
+                    plant_name=plant_name,
+                    action=getattr(s, "action", None),
+                    dt_local=dt_local,
+                    s_type=getattr(s, "type", None),
+                    weekly_mask=getattr(s, "weekly_mask", None),
+                    interval_days=getattr(s, "interval_days", None),
+                    mode="delete",
+                )
     except Exception:
         pass
 

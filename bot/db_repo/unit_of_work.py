@@ -5,9 +5,11 @@ from typing import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .action_logs import ActionLogsRepo
+from .action_pending_messages import ActionPendingMessagesRepo
+from .action_pendings import ActionPendingsRepo
 from .base import AsyncSessionLocal
-from .schedule_shares import ScheduleShareRepo
-from .schedule_subscriptions import ScheduleSubscriptionsRepo
+from .share_links import ShareLinksRepo
+from .share_members import ShareMembersRepo
 
 from .users import UsersRepo
 from .plants import PlantsRepo
@@ -25,8 +27,11 @@ class UnitOfWork:
         self.species = SpeciesRepo(session)
         self.jobs = JobsRepo(session)
         self.action_logs = ActionLogsRepo(session)
-        self.shares = ScheduleShareRepo(session)
-        self.subscriptions = ScheduleSubscriptionsRepo(session)
+        self.share_links = ShareLinksRepo(session)
+        self.share_members = ShareMembersRepo(session)
+        self.action_pendings = ActionPendingsRepo(session)
+        self.action_pending_messages = ActionPendingMessagesRepo(session)
+
 
     async def commit(self) -> None:
         await self.session.commit()
