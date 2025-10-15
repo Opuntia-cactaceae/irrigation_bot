@@ -5,6 +5,8 @@ from typing import AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .action_logs import ActionLogsRepo
+from .action_pending_messages import ActionPendingMessagesRepo
+from .action_pendings import ActionPendingsRepo
 from .base import AsyncSessionLocal
 from .share_links import ShareLinksRepo
 from .share_members import ShareMembersRepo
@@ -27,6 +29,8 @@ class UnitOfWork:
         self.action_logs = ActionLogsRepo(session)
         self.share_links = ShareLinksRepo(session)
         self.share_members = ShareMembersRepo(session)
+        self.action_pendings = ActionPendingsRepo(session)
+        self.action_pending_messages = ActionPendingMessagesRepo(session)
 
 
     async def commit(self) -> None:

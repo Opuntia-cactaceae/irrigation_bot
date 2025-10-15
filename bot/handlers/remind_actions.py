@@ -148,7 +148,6 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
         except Exception:
             msgs = []
 
-        await uow.commit()
 
     for m in msgs or []:
         chat_id = getattr(m, "chat_id", None)
