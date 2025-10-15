@@ -1,16 +1,18 @@
-"""create action_pendings and action_pending_messages tables"""
+"""create action_pendings and action_pending_messages tables (no new types)"""
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql as psql
 
+# Идентификаторы Alembic
 revision = "0013_create_action_pendings"
 down_revision = "0012_add_tg_username_to_users"
 branch_labels = None
 depends_on = None
 
-ActionTypeEnum = sa.Enum(name="actiontype", create_type=False)
-ActionStatusEnum = sa.Enum(name="actionstatus", create_type=False)
-ActionSourceEnum = sa.Enum(name="actionsource", create_type=False)
+ActionTypeEnum = psql.ENUM(name="actiontype", create_type=False)
+ActionStatusEnum = psql.ENUM(name="actionstatus", create_type=False)
+ActionSourceEnum = psql.ENUM(name="actionsource", create_type=False)
 
 
 def upgrade():
@@ -51,6 +53,7 @@ def upgrade():
 
         sa.Column("chat_id", sa.BigInteger(), nullable=False),
         sa.Column("message_id", sa.Integer(), nullable=True),
+        # server_default=false — чтобы не полагаться на клиентскую установку значения
         sa.Column("is_owner", sa.Boolean(), nullable=False, server_default=sa.text("false")),
 
         sa.Column("share_id", sa.Integer(), sa.ForeignKey("share_links.id", ondelete="SET NULL"), nullable=True),
