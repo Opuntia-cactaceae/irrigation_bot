@@ -23,7 +23,7 @@ from bot.handlers.start import router as start_router
 from bot.handlers.settings_inline import settings_router as settings_menu_router
 from bot.handlers.settings_share_wizard import settings_router as settings_share_router
 from bot.handlers.settings_subscriptions import settings_router as settings_subs_router
-
+from bot.handlers.share_codes_inline import codes_router as codes_router
 from bot.scheduler import start_scheduler, plan_all_active
 
 
@@ -68,6 +68,7 @@ async def main():
     dp.include_router(settings_share_router)
     dp.include_router(settings_subs_router)
     dp.include_router(timezone_router)
+    dp.include_router(codes_router)
 
     start_scheduler()
     await plan_all_active()
