@@ -172,12 +172,12 @@ def _page_nav_kb(prefix_cb: str, page: int, pages: int) -> InlineKeyboardBuilder
     right_disabled = page >= pages
     kb.row(
         types.InlineKeyboardButton(
-            text="⬅️" if not left_disabled else "·",
+            text="◀️" if not left_disabled else "·",
             callback_data=f"{prefix_cb}:{page-1}" if not left_disabled else f"{PREFIX}:noop",
         ),
-        types.InlineKeyboardButton(text=f"{page}/{pages}", callback_data=f"{PREFIX}:noop"),
+        types.InlineKeyboardButton(text=f"Стр. {page}/{pages}", callback_data=f"{PREFIX}:noop"),
         types.InlineKeyboardButton(
-            text="➡️" if not right_disabled else "·",
+            text="▶️" if not right_disabled else "·",
             callback_data=f"{prefix_cb}:{page+1}" if not right_disabled else f"{PREFIX}:noop",
         ),
     )
@@ -257,14 +257,16 @@ async def on_code_view(cb: types.CallbackQuery):
     plant_ids = list({int(getattr(s, "plant_id", 0) or 0) for s in schedules if getattr(s, "plant_id", None)})
     plants = await _plants_by_id(plant_ids)
 
-
     sliced, page, pages, total = _slice(schedules, page, PAGE_SIZE)
 
-    lines = [f"👁 <b>Код:</b> <code>{code_obj.code}</code>"]
+    lines = [f"👁 <b>Состав кода доступа</b>"]
+    code_info = f"Код: <code>{code_obj.code}</code>"
     if code_obj.title:
-        lines.append(f"«{code_obj.title}»")
+        code_info += f" «{code_obj.title}»"
+    lines.append(code_info)
     if code_obj.action:
-        act_name = getattr(code_obj.action, "label", lambda: code_obj.action.value)() if hasattr(code_obj.action, "label") else code_obj.action.value
+        act_name = getattr(code_obj.action, "label", lambda: code_obj.action.value)() \
+                   if hasattr(code_obj.action, "label") else code_obj.action.value
         lines.append(f"Фильтр: {ACTION_TO_EMOJI.get(code_obj.action, '🔖')} {act_name}")
     else:
         lines.append("Фильтр: все действия")
@@ -276,27 +278,27 @@ async def on_code_view(cb: types.CallbackQuery):
         async with new_uow() as uow:
             user = await uow.users.get(tg_id)
             tz_name = getattr(user, "tz", None) or "UTC"
-        for idx, s in enumerate(sliced, 1):
+        start_num = (page - 1) * PAGE_SIZE + 1
+        for idx, s in enumerate(sliced, start=start_num):
             pid = int(getattr(s, "plant_id", 0) or 0)
             plant = plants.get(pid)
             pname = getattr(plant, "name", f"Растение #{pid}") if plant else f"Растение #{pid}"
-            global_idx = idx + (page - 1) * PAGE_SIZE
-            lines.append(
-                _schedule_line_via_formatter(
-                    s=s,
-                    plant_name=pname,
-                    tz_name=tz_name,
-                    global_idx=global_idx,
-                )
+            line = format_schedule_line(
+                idx=idx,
+                plant_name=pname,
+                action=getattr(s, "action", None),
+                dt_local=_dt_local_for_sched(s, tz_name),
+                s_type=getattr(s, "type", None) or getattr(s, "s_type", None),
+                weekly_mask=getattr(s, "weekly_mask", None),
+                interval_days=getattr(s, "interval_days", None),
+                mode="delete",
             )
+            lines.append(line)
 
     kb = InlineKeyboardBuilder()
     nav = _page_nav_kb(f"{PREFIX}:view:{code}", page, pages)
     kb.attach(nav)
-    kb.row(
-        types.InlineKeyboardButton(text="⬅️ К списку кодов", callback_data=f"{PREFIX}:page:1"),
-        types.InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings:menu"),
-    )
+    kb.row(types.InlineKeyboardButton(text="⬅️ К списку кодов", callback_data=f"{PREFIX}:page:1"))
 
     await cb.message.edit_text("\n".join(lines), reply_markup=kb.as_markup(), parse_mode="HTML")
     await cb.answer()

@@ -85,8 +85,10 @@ class ShareLinksRepo(BaseRepo):
         res = await self.session.execute(delete(ShareLink).where(ShareLink.id == share_id))
         return (res.rowcount or 0) > 0
 
-    async def get_by_code(self, code: str) -> Optional[ShareLink]:
+    async def get_by_code(self, code: str, *, with_relations: bool = False) -> Optional[ShareLink]:
         q = select(ShareLink).where(ShareLink.code == code)
+        if with_relations:
+            q = q.options(*LOAD_RELS_FULL)
         return (await self.session.execute(q)).scalar_one_or_none()
 
     async def get_by_code_active(self, code: str, *, now_utc: datetime | None = None) -> Optional[ShareLink]:
