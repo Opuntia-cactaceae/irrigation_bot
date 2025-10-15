@@ -1,11 +1,11 @@
 # bot/handlers/start.py
 from aiogram import Router, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.keyboards.main_menu import MENU_PREFIX
-
+from bot.handlers.main_menu import show_main_menu
 from bot.handlers.timezone import show_timezone_prompt  # <- NEW
 
 router = Router(name="start")
@@ -44,3 +44,7 @@ async def start(m: types.Message, state):
         "Нажми кнопку ниже, чтобы открыть главное меню.",
         reply_markup=kb.as_markup()
     )
+
+@router.message(Command("menu"))
+async def open_menu_command(m: types.Message):
+    await show_main_menu(m)
