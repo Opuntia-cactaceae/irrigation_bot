@@ -53,8 +53,9 @@ async def create_user_by_tg(tg_id: int) -> User:
 
 async def show_settings_menu(target: types.CallbackQuery | types.Message):
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="👤 Пользователь", callback_data=f"{PREFIX}:user"))  # <- NEW
+    kb.row(types.InlineKeyboardButton(text="👤 Пользователь", callback_data=f"{PREFIX}:user"))
     kb.row(types.InlineKeyboardButton(text="🔗 Поделиться расписанием", callback_data=f"{PREFIX}:share_wizard:start"))
+    kb.row(types.InlineKeyboardButton(text="🔗 Мои коды доступа", callback_data="codes:root"))
     kb.row(types.InlineKeyboardButton(text="📬 Подписки", callback_data=f"{PREFIX}:subs"))
     kb.row(types.InlineKeyboardButton(text="↩️ Меню", callback_data="menu:root"))
 
