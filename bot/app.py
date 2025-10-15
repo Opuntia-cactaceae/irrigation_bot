@@ -12,6 +12,7 @@ from bot.db_repo.models import Base
 from bot.handlers.history_inline import history_router
 from bot.handlers.main_menu import main_menu_router
 from bot.handlers.help_inline import help_router
+from bot.handlers.timezone import timezone_router
 from bot.handlers.plants_inline import plants_router
 from bot.handlers.calendar_inline import calendar_router
 from bot.handlers.schedule_delete_inline import delete_router
@@ -66,6 +67,7 @@ async def main():
     dp.include_router(settings_menu_router)
     dp.include_router(settings_share_router)
     dp.include_router(settings_subs_router)
+    dp.include_router(timezone_router)
 
     start_scheduler()
     await plan_all_active()

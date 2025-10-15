@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import Optional
 
 import pytz
-
 from aiogram import Bot
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -20,12 +19,18 @@ from apscheduler.events import (
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-
 from bot.config import settings
-from bot.db_repo.models import ActionType, Schedule, ScheduleType, User, Plant
-from bot.db_repo.models import ActionStatus, ActionSource
-from bot.services.rules import next_by_interval, next_by_weekly
+from bot.db_repo.models import (
+    User,
+    Plant,
+    Schedule,
+    ActionType,
+    ActionSource,
+    ActionStatus,
+    ScheduleType,
+)
 from bot.db_repo.unit_of_work import new_uow
+from bot.services.rules import next_by_interval, next_by_weekly
 
 class RemindCb(CallbackData, prefix="r"):
     action: str
@@ -42,13 +47,6 @@ SYNC_DB_URL = (
 )
 jobstores = {"default": SQLAlchemyJobStore(url=SYNC_DB_URL, tablename="apscheduler_jobs")}
 scheduler = AsyncIOScheduler(jobstores=jobstores)
-
-
-ACTION_EMOJI = {
-    ActionType.WATERING: "💧",
-    ActionType.FERTILIZING: "💊",
-    ActionType.REPOTTING: "🪴",
-}
 
 
 def _job_id(schedule_id: int) -> str:
@@ -124,13 +122,26 @@ def _heartbeat():
         logger.exception("[SCHED HEARTBEAT] failed")
 
 
-async def send_reminder(schedule_id: int):
-    logger.info("[JOB START] schedule_id=%s", schedule_id)
 
+def _build_action_kb(schedule_id: int, allowed: bool):
+    """Возвращает клавиатуру, если пользователю разрешено отмечать действия"""
+    if not allowed:
+        return None
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Сделано", callback_data=RemindCb(action="done", schedule_id=schedule_id).pack())
+    kb.button(text="⏭️ Пропустить", callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack())
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+async def send_reminder(schedule_id: int):
+    """Отправка уведомлений владельцу и подписчикам с учётом разрешений"""
+    logger.info("[JOB START] schedule_id=%s", schedule_id)
     bot = Bot(token=settings.BOT_TOKEN)
+
     try:
         async with new_uow() as uow:
-            sch = await uow.jobs.get_schedule(schedule_id)
+            sch: Schedule | None = await uow.jobs.get_schedule(schedule_id)
             if not sch or not sch.active:
                 logger.warning("[JOB SKIP] schedule_id=%s inactive/missing", schedule_id)
                 return
@@ -138,27 +149,56 @@ async def send_reminder(schedule_id: int):
             user: User = sch.plant.user
             plant: Plant = sch.plant
 
-            emoji = ACTION_EMOJI.get(sch.action, "•")
-            action_text = {
-                ActionType.WATERING: "Время полива",
-                ActionType.FERTILIZING: "Время удобрить",
-                ActionType.REPOTTING: "Время пересадки",
-            }[sch.action]
-
-            kb = InlineKeyboardBuilder()
-            kb.button(text="✅ Сделано",  callback_data=RemindCb(action="done", schedule_id=schedule_id).pack())
-            kb.button(text="⏭️ Пропустить", callback_data=RemindCb(action="skip", schedule_id=schedule_id).pack())
-            kb.adjust(2)
+            emoji = sch.action.emoji()
+            title = sch.action.title_ru()
+            base_text = f"{emoji} {title}: {plant.name}"
 
             try:
-                await bot.send_message(
-                    user.id,
-                    f"{emoji} {action_text}: {plant.name}",
-                    reply_markup=kb.as_markup(),
-                )
-                logger.info("[SEND OK] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action)
+                await bot.send_message(user.id, base_text, reply_markup=_build_action_kb(schedule_id, True))
+                logger.info("[SEND OK OWNER] user_id=%s plant_id=%s action=%s", user.id, plant.id, sch.action)
             except Exception as e:
-                logger.exception("[SEND ERR] schedule_id=%s: %s", schedule_id, e)
+                logger.exception("[SEND ERR OWNER] schedule_id=%s: %s", schedule_id, e)
+
+            try:
+                shares = await uow.share_links.list_links(schedule_id)
+            except Exception:
+                shares = []
+                logger.exception("[SHARE LINKS ERR] schedule_id=%s", schedule_id)
+
+            for share in shares or []:
+                if not getattr(share, "is_active", True):
+                    continue
+                try:
+                    members = await uow.share_members.list_active_by_share(share.id)
+                except Exception:
+                    members = []
+                    logger.exception("[SHARE MEMBERS ERR] share_id=%s", share.id)
+
+                for m in members:
+                    if getattr(m, "muted", False):
+                        continue
+
+                    can_complete = (
+                        m.can_complete_override
+                        if m.can_complete_override is not None
+                        else bool(share.allow_complete_default)
+                    )
+
+                    try:
+                        await bot.send_message(
+                            m.subscriber_user_id,
+                            base_text,
+                            reply_markup=_build_action_kb(schedule_id, can_complete),
+                        )
+                        logger.info(
+                            "[SEND OK SUB] user_id=%s share_id=%s schedule_id=%s buttons=%s",
+                            m.subscriber_user_id, share.id, schedule_id, bool(can_complete),
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            "[SEND ERR SUB] schedule_id=%s user_id=%s share_id=%s: %s",
+                            schedule_id, m.subscriber_user_id, share.id, e,
+                        )
 
     finally:
         await bot.session.close()
