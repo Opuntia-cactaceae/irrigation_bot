@@ -67,18 +67,24 @@ class ShareCode:
 async def _list_user_codes(tg_id: int) -> List[ShareCode]:
     """
     Возвращает список ShareCode, созданных пользователем.
-    Использует ShareLinksRepo.list_by_owner.
+    Определяет action по прикреплённым расписаниям: если у всех одно и то же — ставим его, иначе None.
     """
     async with new_uow() as uow:
-        links = await uow.share_links.list_by_owner(tg_id, with_relations=False)
+        links = await uow.share_links.list_by_owner(tg_id, with_relations=True)
 
     result: List[ShareCode] = []
     for link in links:
+        actions = {
+            getattr(ls.schedule, "action", None)
+            for ls in getattr(link, "schedules", []) if getattr(ls, "schedule", None)
+        }
+        deduced_action = next(iter(actions)) if len(actions) == 1 else None
+
         result.append(
             ShareCode(
                 code=link.code,
                 owner_tg_id=link.owner_user_id,
-                action=None,
+                action=deduced_action,
                 title=link.title,
                 created_at=getattr(link, "created_at_utc", None),
                 expires_at=getattr(link, "expires_at_utc", None),
@@ -99,7 +105,10 @@ async def _list_schedules_for_code(tg_id: int, code: ShareCode) -> List[Schedule
         if not schedule_ids:
             return []
 
-        schedules = await uow.schedules.list_active_by_ids(schedule_ids, action=code.action)
+        if code.action is not None:
+            schedules = await uow.schedules.list_active_by_ids(schedule_ids, action=code.action)
+        else:
+            schedules = await uow.schedules.list_active_by_ids(schedule_ids)
 
     return schedules
 
@@ -298,7 +307,7 @@ async def on_code_delete(cb: types.CallbackQuery):
     code = cb.data.split(":")[2]
     kb = InlineKeyboardBuilder()
     kb.row(
-        types.InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"{PREFIX}:delete:confirm:{code}"),
+        types.InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"{PREFIX}:delete_confirm:{code}"),
         types.InlineKeyboardButton(text="↩️ Отмена", callback_data=f"{PREFIX}:page:1"),
     )
     await cb.message.edit_text(
@@ -309,7 +318,7 @@ async def on_code_delete(cb: types.CallbackQuery):
     await cb.answer()
 
 
-@codes_router.callback_query(F.data.startswith(f"{PREFIX}:delete:confirm:"))
+@codes_router.callback_query(F.data.startswith(f"{PREFIX}:delete_confirm:"))
 async def on_code_delete_confirm(cb: types.CallbackQuery):
     code = cb.data.split(":")[3]
 
