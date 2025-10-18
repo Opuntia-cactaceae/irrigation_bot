@@ -73,7 +73,7 @@ async def on_noop(cb: types.CallbackQuery):
 @settings_router.callback_query(F.data == f"{PREFIX}:user")
 async def on_user_root(cb: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=CB_TZ_OPEN))
+    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=f"{PREFIX}:user:tz"))
     kb.row(types.InlineKeyboardButton(text="📝 Ник", callback_data=f"{PREFIX}:user:nick"))
     kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:menu"))
     await cb.message.edit_text("👤 <b>Пользователь</b>\nВыберите раздел:", reply_markup=kb.as_markup())
@@ -100,7 +100,7 @@ async def on_user_timezone(cb: types.CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     kb.row(
-        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=f"{PREFIX}:user:tz:change"),
+        types.InlineKeyboardButton(text="🔁 Сменить", callback_data=CB_TZ_OPEN),
         types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:user")
     )
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
