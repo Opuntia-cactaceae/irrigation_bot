@@ -193,7 +193,8 @@ async def on_tz_more(cb: types.CallbackQuery, state: FSMContext):
 
 @timezone_router.callback_query(TimezoneState.browsing, F.data.startswith(CB_TZ_SET + ":"))
 async def on_tz_set(cb: types.CallbackQuery, state: FSMContext):
-    _, tz_name = cb.data.split(":", 1)
+
+    tz_name = cb.data.removeprefix(f"{CB_TZ_SET}:")
 
     async with new_uow() as uow:
         await uow.users.set_timezone(cb.from_user.id, tz_name)
