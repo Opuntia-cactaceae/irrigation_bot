@@ -214,7 +214,8 @@ def _render_feed_text(feed_page) -> str:
                 t = it.dt_local.strftime("%H:%M")
             else:
                 t = it.dt_utc.astimezone(timezone.utc).strftime("%H:%M")
-            lines.append(f"  {t} {emoji} {it.plant_name} (id:{it.plant_id})")
+            sub_mark = " 👥" if getattr(it, "is_sub", False) else ""
+            lines.append(f"  {t} {emoji} {it.plant_name} (id:{it.plant_id}){sub_mark}")
     return "\n".join(lines).lstrip()
 
 

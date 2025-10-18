@@ -148,16 +148,16 @@ async def _cascade_delete_plant(user_tg_id: int, plant_id: int) -> dict:
         if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
             raise PermissionError("Недоступно")
 
-        try:
-            logs_list = await uow.action_logs.list_by_plant(plant_id)
-        except AttributeError:
-            logs_list = []
-        for a in logs_list or []:
-            try:
-                await uow.action_logs.delete(a.id)
-                removed["logs"] += 1
-            except Exception:
-                pass
+        # try:
+        #     logs_list = await uow.action_logs.list_by_plant(plant_id)
+        # except AttributeError:
+        #     logs_list = []
+        # for a in logs_list or []:
+        #     try:
+        #         await uow.action_logs.delete(a.id)
+        #         removed["logs"] += 1
+        #     except Exception:
+        #         pass
 
         try:
             await uow.schedules.delete_by_plant(plant_id)

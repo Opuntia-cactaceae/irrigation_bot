@@ -63,16 +63,49 @@ def kb_subs_list_page(member_ids: List[int], page: int, pages: int):
     return kb.as_markup()
 
 
-def kb_sub_item(member_id: int, return_page: int):
+def kb_sub_item(member_id: int, return_page: int, status: ShareMemberStatus):
+    kb = InlineKeyboardBuilder()
+
+    if status == ShareMemberStatus.ACTIVE:
+        kb.row(
+            types.InlineKeyboardButton(
+                text="❌ Отписаться",
+                callback_data=f"{PREFIX}:subs_unsub_confirm:{member_id}:{return_page}",
+            )
+        )
+    elif status == ShareMemberStatus.REMOVED:
+        kb.row(
+            types.InlineKeyboardButton(
+                text="♻️ Включить обратно",
+                callback_data=f"{PREFIX}:subs_enable:{member_id}:{return_page}",
+            ),
+            types.InlineKeyboardButton(
+                text="🗑️ Удалить окончательно",
+                callback_data=f"{PREFIX}:subs_delete_confirm:{member_id}:{return_page}",
+            ),
+        )
+    else:
+        kb.row(
+            types.InlineKeyboardButton(
+                text="♻️ Включить обратно",
+                callback_data=f"{PREFIX}:subs_enable:{member_id}:{return_page}",
+            )
+        )
+
+    kb.row(types.InlineKeyboardButton(text="⬅️ К списку", callback_data=f"{PREFIX}:subs_list:{return_page}"))
+    kb.row(types.InlineKeyboardButton(text="↩️ Настройки", callback_data=f"{PREFIX}:menu"))
+    return kb.as_markup()
+
+
+def kb_delete_confirm(member_id: int, return_page: int):
     kb = InlineKeyboardBuilder()
     kb.row(
         types.InlineKeyboardButton(
-            text="❌ Отписаться",
-            callback_data=f"{PREFIX}:subs_unsub_confirm:{member_id}:{return_page}",
+            text="✅ Да, удалить окончательно",
+            callback_data=f"{PREFIX}:subs_delete:{member_id}:{return_page}",
         )
     )
-    kb.row(types.InlineKeyboardButton(text="⬅️ К списку", callback_data=f"{PREFIX}:subs_list:{return_page}"))
-    kb.row(types.InlineKeyboardButton(text="↩️ Настройки", callback_data=f"{PREFIX}:menu"))
+    kb.row(types.InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"{PREFIX}:subs_item:{member_id}:{return_page}"))
     return kb.as_markup()
 
 
@@ -282,13 +315,15 @@ async def on_subs_item(cb: types.CallbackQuery):
         title = getattr(share, "title", None) or "Без названия"
         allow = "отмечать можно" if share.allow_complete_default else "отмечать нельзя"
         hist = "история видна" if share.show_history_default else "история скрыта"
+        status = getattr(m, "status", None)
 
     text = (
         f"<b>{title}</b>\n"
-        f"Права: {allow}, {hist}\n\n"
-        "Вы можете отписаться от этой подписки."
+        f"Права: {allow}, {hist}\n"
+        f"Статус: {_status_label(status)}\n\n"
+        "Вы можете изменить состояние этой подписки."
     )
-    await cb.message.edit_text(text, reply_markup=kb_sub_item(m.id, return_page))
+    await cb.message.edit_text(text, reply_markup=kb_sub_item(m.id, return_page, status))
     await cb.answer()
 
 
@@ -326,10 +361,73 @@ async def on_subs_unsub(cb: types.CallbackQuery):
         await uow.share_members.set_status(member_id=m.id, status=ShareMemberStatus.REMOVED)
         await uow.commit()
 
-    await cb.answer("Подписка удалена")
+    await cb.answer("Подписка отключена")
+    cb2 = types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message,
+                              data=f"{PREFIX}:subs_item:{member_id}:{return_page}")
+    await on_subs_item(cb2)
+
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_enable:"))
+async def on_subs_enable(cb: types.CallbackQuery):
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
+
+    async with new_uow() as uow:
+        m = await uow.share_members.get(member_id)
+        if not m:
+            await cb.answer("Подписка не найдена", show_alert=True)
+            return
+
+        await uow.share_members.set_status(member_id=m.id, status=ShareMemberStatus.ACTIVE)
+        await uow.commit()
+
+    await cb.answer("Подписка включена")
+    cb2 = types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"{PREFIX}:subs_item:{member_id}:{return_page}")
+    await on_subs_item(cb2)
+
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_delete_confirm:"))
+async def on_subs_delete_confirm(cb: types.CallbackQuery):
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
+
+    async with new_uow() as uow:
+        m = await uow.share_members.get_with_relations(member_id)
+        if not m:
+            await cb.answer("Подписка не найдена", show_alert=True)
+            return
+        title = getattr(getattr(m, "share", None), "title", None) or "Без названия"
+
+    text = (
+        f"Удалить подписку «{title}» окончательно?\n\n"
+        "Это удалит запись подписки. Если нужно — вы сможете снова подписаться по коду."
+    )
+    await cb.message.edit_text(text, reply_markup=kb_delete_confirm(member_id, return_page))
+    await cb.answer()
+
+
+@settings_router.callback_query(F.data.startswith(f"{PREFIX}:subs_delete:"))
+async def on_subs_delete(cb: types.CallbackQuery):
+    parts = cb.data.split(":")
+    member_id = int(parts[-2])
+    return_page = int(parts[-1])
+
+    async with new_uow() as uow:
+        m = await uow.share_members.get(member_id)
+        if not m:
+            await cb.answer("Подписка не найдена", show_alert=True)
+            return
+
+        if getattr(m, "status", None) != ShareMemberStatus.REMOVED:
+            await cb.answer("Сначала отключите подписку (отпишитесь), потом можно удалить.", show_alert=True)
+            return
+
+        await uow.share_members.delete(member_id=m.id)
+        await uow.commit()
+
+    await cb.answer("Подписка удалена окончательно")
     cb2 = types.CallbackQuery(id=cb.id, from_user=cb.from_user, chat_instance=cb.chat_instance, message=cb.message, data=f"{PREFIX}:subs_list:{return_page}")
     await on_subs_list(cb2)
-
 
 @settings_router.callback_query(F.data == f"{PREFIX}:noop")
 async def on_noop(cb: types.CallbackQuery):

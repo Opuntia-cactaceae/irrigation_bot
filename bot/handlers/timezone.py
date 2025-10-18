@@ -204,10 +204,22 @@ async def on_tz_set(cb: types.CallbackQuery, state: FSMContext):
         await uow.commit()
 
     await cb.answer("Сохранено ✅")
+
+    kb = InlineKeyboardBuilder()
+    kb.row(types.InlineKeyboardButton(text="🔙 В меню таймзон", callback_data=f"{TZ_PREFIX}:main"))
+
     try:
-        await cb.message.edit_text(f"Таймзона установлена: *{tz_name}*", parse_mode="Markdown")
+        await cb.message.edit_text(
+            f"Таймзона установлена: *{tz_name}*",
+            parse_mode="Markdown",
+            reply_markup=kb.as_markup(),
+        )
     except Exception:
-        await cb.message.answer(f"Таймзона установлена: *{tz_name}*", parse_mode="Markdown")
+        await cb.message.answer(
+            f"Таймзона установлена: *{tz_name}*",
+            parse_mode="Markdown",
+            reply_markup=kb.as_markup(),
+        )
 
     if show_settings_menu:
         await show_settings_menu(cb)

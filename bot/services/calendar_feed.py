@@ -27,6 +27,7 @@ class FeedItem:
     plant_name: str
     action: ActionType
     schedule_id: int
+    is_sub: bool = False
 
 
 @dataclass
@@ -177,7 +178,7 @@ def iter_weekly_occurrences(*,
                 yield occ_utc
         d += timedelta(days=1)
 
-def make_feed_item(dt_utc: datetime, tz: pytz.BaseTzInfo, s: "Schedule", plant_name: str) -> FeedItem:
+def make_feed_item(dt_utc: datetime, tz: pytz.BaseTzInfo, s: "Schedule", plant_name: str, is_sub: bool = False) -> FeedItem:
     return FeedItem(
         dt_utc=dt_utc,
         dt_local=dt_utc.astimezone(tz),
@@ -185,6 +186,7 @@ def make_feed_item(dt_utc: datetime, tz: pytz.BaseTzInfo, s: "Schedule", plant_n
         plant_name=plant_name,
         action=s.action,
         schedule_id=s.id,
+        is_sub=is_sub,
     )
 
 def group_feed_items_by_day(items: list[FeedItem]) -> list[FeedDay]:
@@ -361,7 +363,7 @@ async def get_feed_subs(
                         start_utc=start_utc,
                         end_utc=end_utc,
                 ):
-                    items.append(make_feed_item(occ_utc, tz, s, plant_name))
+                    items.append(make_feed_item(occ_utc, tz, s, plant_name, is_sub=True))
             else:
                 for occ_utc in iter_weekly_occurrences(
                         last_dt_utc=last_dt_utc,
@@ -373,7 +375,7 @@ async def get_feed_subs(
                         start_utc=start_utc,
                         end_utc=end_utc,
                 ):
-                    items.append(make_feed_item(occ_utc, tz, s, plant_name))
+                    items.append(make_feed_item(occ_utc, tz, s, plant_name, is_sub=True))
 
         days: List["FeedDay"] = group_feed_items_by_day(items)
         return FeedPage(page=page, pages=total_pages, days=days)
