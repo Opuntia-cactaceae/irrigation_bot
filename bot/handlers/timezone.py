@@ -13,9 +13,10 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.db_repo.unit_of_work import new_uow
+from ..keyboards.main_menu import MENU_PREFIX
 
 try:
-    from .settings_inline import show_settings_menu  # опционально
+    from .settings_inline import show_settings_menu, PREFIX  # опционально
 except Exception:
     show_settings_menu = None  # если нет — проигнорируем
 
@@ -112,7 +113,7 @@ async def _render_tz_page(msg: types.Message, candidates: list[str], page: int, 
     else:
         await msg.answer(text, reply_markup=kb.as_markup())
 
-# ------- публичные entrypoints --------
+
 async def show_timezone_prompt(message_or_cb: types.Message | types.CallbackQuery, state: FSMContext):
     text = (
         "Введи *текущую дату и час* у тебя.\n\n"
@@ -206,7 +207,13 @@ async def on_tz_set(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer("Сохранено ✅")
 
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🔙 В меню таймзон", callback_data=f"{TZ_PREFIX}:main"))
+    kb.row(types.InlineKeyboardButton(text="К таймзоне", callback_data=f"{PREFIX}:user:tz"))
+    kb.row(
+        types.InlineKeyboardButton(
+            text="📋 Открыть главное меню",
+            callback_data=f"{MENU_PREFIX}:root"
+        )
+    )
 
     try:
         await cb.message.edit_text(

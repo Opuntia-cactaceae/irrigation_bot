@@ -41,11 +41,6 @@ def _weekly_mask_to_text(mask: int) -> str:
     return ",".join(picked) if picked else "—"
 
 
-def _action_emoji(action: ActionType | str) -> str:
-    val = action if isinstance(action, str) else action.value
-    return {"watering": "💧", "fertilizing": "🧪", "repotting": "🪴", "custom": "🔖"}.get(val, "🔔")
-
-
 async def create_user_by_tg(tg_id: int) -> User:
     async with new_uow() as uow:
         return await uow.users.create(tg_id)
