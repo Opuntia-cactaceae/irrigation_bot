@@ -14,11 +14,11 @@ from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import Schedule, Plant, User, ActionType
 from bot.db_repo.schedules import SchedulesRepo
 
-from bot.handlers.timezone import show_timezone_prompt
-
 settings_router = Router(name="settings_inline")
 
 PREFIX = "settings"
+TZ_PREFIX = "tz"
+CB_TZ_OPEN = f"{TZ_PREFIX}:open"
 PAGE_SIZE = 7
 
 
@@ -73,7 +73,7 @@ async def on_noop(cb: types.CallbackQuery):
 @settings_router.callback_query(F.data == f"{PREFIX}:user")
 async def on_user_root(cb: types.CallbackQuery):
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=f"{PREFIX}:user:tz"))
+    kb.row(types.InlineKeyboardButton(text="🕒 Таймзона", callback_data=CB_TZ_OPEN))
     kb.row(types.InlineKeyboardButton(text="📝 Ник", callback_data=f"{PREFIX}:user:nick"))
     kb.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{PREFIX}:menu"))
     await cb.message.edit_text("👤 <b>Пользователь</b>\nВыберите раздел:", reply_markup=kb.as_markup())
@@ -106,13 +106,6 @@ async def on_user_timezone(cb: types.CallbackQuery):
     await cb.message.edit_text(text, reply_markup=kb.as_markup())
     await cb.answer()
 
-
-@settings_router.callback_query(F.data == f"{PREFIX}:user:tz:change")
-async def on_user_timezone_change(cb: types.CallbackQuery, state: FSMContext):
-    if show_timezone_prompt:
-        await show_timezone_prompt(cb, state)
-    else:
-        await cb.answer("Не удалось запустить смену таймзоны", show_alert=True)
 
 @settings_router.callback_query(F.data == f"{PREFIX}:user:nick")
 async def on_user_nick(cb: types.CallbackQuery):

@@ -15,7 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from ..keyboards.main_menu import MENU_PREFIX
 
-from .settings_inline import show_settings_menu, PREFIX as SET_PREFIX
+from .settings_inline import show_settings_menu, PREFIX as SET_PREFIX, CB_TZ_OPEN, TZ_PREFIX
 
 timezone_router = Router(name="timezone")
 
@@ -24,9 +24,9 @@ class TimezoneState(StatesGroup):
     browsing = State()
 
 
-TZ_PREFIX = "tz"
 CB_TZ_SET = f"{TZ_PREFIX}:set"
 CB_TZ_MORE = f"{TZ_PREFIX}:more"
+
 
 
 def _is_candidate_zone(name: str) -> bool:
@@ -230,3 +230,7 @@ async def on_tz_set(cb: types.CallbackQuery, state: FSMContext):
         await show_settings_menu(cb)
 
     await state.clear()
+
+@timezone_router.callback_query(F.data == CB_TZ_OPEN)
+async def on_tz_open_from_settings(cb: types.CallbackQuery, state: FSMContext):
+    await show_timezone_prompt(cb, state)
