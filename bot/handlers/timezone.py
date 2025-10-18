@@ -15,10 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.db_repo.unit_of_work import new_uow
 from ..keyboards.main_menu import MENU_PREFIX
 
-try:
-    from .settings_inline import show_settings_menu, PREFIX  # опционально
-except Exception:
-    show_settings_menu = None  # если нет — проигнорируем
+from .settings_inline import show_settings_menu, PREFIX as SET_PREFIX
 
 timezone_router = Router(name="timezone")
 
@@ -208,7 +205,7 @@ async def on_tz_set(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer("Сохранено ✅")
 
     kb = InlineKeyboardBuilder()
-    kb.row(types.InlineKeyboardButton(text="К таймзоне", callback_data=f"{PREFIX}:user:tz"))
+    kb.row(types.InlineKeyboardButton(text="К таймзоне", callback_data=f"{SET_PREFIX}:user:tz"))
     kb.row(
         types.InlineKeyboardButton(
             text="📋 Открыть главное меню",
