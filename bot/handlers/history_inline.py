@@ -311,8 +311,6 @@ def _render_feed_text(feed_week: HistoryWeek) -> str:
             lines.append(
                 f"  {t} {status_emoji}{by_subscriber_mark} {act_emoji}{shared_mark} {plant_lbl} (id:{pid}, sch:{sch})"
             )
-
-            lines.append(f"  {t} {status_emoji} {act_emoji}{shared_mark} {plant_lbl} (id:{pid}, sch:{sch})")
     return "\n".join(lines).lstrip()
 
 

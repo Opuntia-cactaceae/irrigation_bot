@@ -116,6 +116,10 @@ def kb_plants_list_page(
 
     kb.row(
         types.InlineKeyboardButton(
+            text="✏️ Редактировать",
+            callback_data=f"{prefix}:edit_menu:{page}:{species_id or 0}",
+        ),
+        types.InlineKeyboardButton(
             text="🗑 Удалить растения",
             callback_data=f"{prefix}:del_menu:{page}:{species_id or 0}",
         ),

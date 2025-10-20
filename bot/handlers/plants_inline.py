@@ -39,6 +39,9 @@ class AddPlantStep(Enum):
     SPECIES_MODE = "waiting_species_mode"
     SPECIES_TEXT = "waiting_species_text"
 
+class EditPlantStates(StatesGroup):
+    waiting_new_name = State()
+    waiting_new_species_text = State()
 
 STEP_TO_STATE = {
     AddPlantStep.NAME: AddPlantStates.waiting_name,
@@ -691,3 +694,303 @@ async def on_add_pick_species(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.answer("Растение создано ✅", show_alert=False)
     return await show_plants_list(cb, page=1, species_id=None, auto_answer=False)
+
+def kb_edit_plants_menu(*, page_items, page: int, pages: int, species_id: int | None, prefix: str):
+    kb = InlineKeyboardBuilder()
+    # Кнопки-элементы: по одному на растение
+    for p in page_items:
+        kb.button(
+            text=f"✏️ {getattr(p, 'name', '—')} (id:{getattr(p,'id','?')})",
+            callback_data=f"{prefix}:edit_pick:{getattr(p,'id','0')}:{page}:{species_id or 0}",
+        )
+    if not page_items:
+        kb.button(text="↩️ Назад", callback_data=f"{prefix}:back_to_list:{page}")
+        return kb.as_markup()
+
+    # Пагинация
+    prev_p = max(1, page - 1)
+    next_p = min(pages, page + 1)
+    kb.row(
+        types.InlineKeyboardButton(text="◀️", callback_data=f"{prefix}:edit_menu:{prev_p}:{species_id or 0}"),
+        types.InlineKeyboardButton(text=f"Стр {page}/{pages}", callback_data=f"{prefix}:noop"),
+        types.InlineKeyboardButton(text="▶️", callback_data=f"{prefix}:edit_menu:{next_p}:{species_id or 0}"),
+    )
+    kb.row(types.InlineKeyboardButton(text="↩️ К списку", callback_data=f"{prefix}:back_to_list:{page}"))
+    return kb.as_markup()
+
+
+def kb_edit_actions(*, plant_id: int, page: int, species_id: int | None, prefix: str):
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        types.InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"{prefix}:edit_rename:{plant_id}:{page}:{species_id or 0}"),
+        types.InlineKeyboardButton(text="🧬 Сменить вид", callback_data=f"{prefix}:edit_species:{plant_id}:{page}:{species_id or 0}"),
+    )
+    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{prefix}:edit_menu:{page}:{species_id or 0}"))
+    return kb.as_markup()
+
+
+def kb_edit_species_list(*, species: list, selected_id: int | None, page: int, plant_id: int, prefix: str):
+    SIZE = PAGE_SIZE
+    items, page, pages, _ = _slice(species, page, SIZE)
+
+    kb = InlineKeyboardBuilder()
+    # элементы вида
+    for sp in items:
+        mark = "✓ " if selected_id and selected_id == getattr(sp, "id", None) else ""
+        kb.button(
+            text=f"{mark}{getattr(sp, 'name', '—')} (id:{getattr(sp,'id','?')})",
+            callback_data=f"{prefix}:edit_set_species:{plant_id}:{getattr(sp,'id','0')}:{page}",
+        )
+
+    # спец-кнопки
+    kb.row(types.InlineKeyboardButton(text="✍️ Ввести вид текстом", callback_data=f"{prefix}:edit_species_add_text:{plant_id}:{page}"))
+
+    # пагинация
+    prev_p = max(1, page - 1)
+    next_p = min(pages, page + 1)
+    kb.row(
+        types.InlineKeyboardButton(text="◀️", callback_data=f"{prefix}:edit_species_page:{plant_id}:{prev_p}"),
+        types.InlineKeyboardButton(text=f"Стр {page}/{pages}", callback_data=f"{prefix}:noop"),
+        types.InlineKeyboardButton(text="▶️", callback_data=f"{prefix}:edit_species_page:{plant_id}:{next_p}"),
+    )
+    kb.row(types.InlineKeyboardButton(text="↩️ Назад", callback_data=f"{prefix}:edit_pick:{plant_id}:1:0"))
+    return kb.as_markup()
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_menu"))
+async def on_edit_menu(cb: types.CallbackQuery):
+    # формат: plants:edit_menu:{page}:{species_id or 0}
+    parts = cb.data.split(":")
+    try:
+        page = int(parts[2]) if len(parts) > 2 else 1
+        species_id = (int(parts[3]) if len(parts) > 3 else 0) or None
+    except Exception:
+        page, species_id = 1, None
+
+    user = await _get_user(cb.from_user.id)
+    plants = await _get_plants_with_filter(user.id, species_id)
+    page_items, page, pages, _ = _slice(plants, page)
+
+    lines = ["✏️ <b>Редактирование растений</b>", "Выберите растение:"]
+    if page_items:
+        for p in page_items:
+            sp = f" · вид #{getattr(p, 'species_id', None)}" if getattr(p, "species_id", None) else ""
+            lines.append(f"• {p.name}{sp} (id:{p.id})")
+    else:
+        lines.append("(на этой странице нет растений)")
+
+    await cb.message.edit_text(
+        "\n".join(lines),
+        reply_markup=kb_edit_plants_menu(page_items=page_items, page=page, pages=pages, species_id=species_id, prefix=PREFIX),
+    )
+    await cb.answer()
+
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_pick"))
+async def on_edit_pick(cb: types.CallbackQuery):
+    # формат: plants:edit_pick:{plant_id}:{page}:{species_id or 0}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); page = int(parts[3]); species_id = (int(parts[4]) if len(parts) > 4 else 0) or None
+    except Exception:
+        return await cb.answer("Не получилось открыть редактирование", show_alert=True)
+
+    async with new_uow() as uow:
+        plant = await uow.plants.get(plant_id)
+        if not plant:
+            await cb.answer("Растение не найдено", show_alert=True)
+            return
+        me = await uow.users.get(cb.from_user.id)
+        if getattr(plant, "user_id", None) != getattr(me, "id", None):
+            return await cb.answer("Недоступно", show_alert=True)
+
+    name = getattr(plant, "name", "—")
+    sp_id = getattr(plant, "species_id", None)
+    lines = [
+        f"✏️ <b>Редактирование «{name}»</b>",
+        f"id: <code>{plant_id}</code> · вид: <b>{sp_id if sp_id else '—'}</b>",
+        "Выберите действие:",
+    ]
+    await cb.message.edit_text("\n".join(lines), reply_markup=kb_edit_actions(plant_id=plant_id, page=page, species_id=species_id, prefix=PREFIX))
+    await cb.answer()
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_rename"))
+async def on_edit_rename(cb: types.CallbackQuery, state: FSMContext):
+    # формат: plants:edit_rename:{plant_id}:{page}:{species_id or 0}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); page = int(parts[3]); species_id = (int(parts[4]) if len(parts) > 4 else 0) or None
+    except Exception:
+        return await cb.answer("Не получилось", show_alert=True)
+
+    await state.set_state(EditPlantStates.waiting_new_name)
+    await state.update_data(edit_plant_id=plant_id, edit_page=page, edit_species_filter=species_id)
+    sent = await cb.message.edit_text("✍️ Введите новое <b>название</b> растения сообщением.\n\nМожно отправить «Отмена».")
+    await _remember_bot_message(state, sent)
+    await cb.answer()
+
+
+@plants_router.message(EditPlantStates.waiting_new_name)
+async def input_new_plant_name(m: types.Message, state: FSMContext):
+    await _clear_prev_markup_if_any(state, m.bot)
+    new_name = (m.text or "").strip()
+    if not new_name:
+        return await m.answer("Название пустое. Введите ещё раз или напишите «Отмена».")
+    data = await state.get_data()
+    plant_id = data.get("edit_plant_id"); page = data.get("edit_page", 1); species_id = data.get("edit_species_filter")
+
+    try:
+        async with new_uow() as uow:
+            me = await uow.users.get(m.from_user.id)
+            plant = await uow.plants.get(int(plant_id))
+            if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
+                await state.clear()
+                return await m.answer("Недоступно")
+            # update с fallback
+            try:
+                await uow.plants.update(int(plant_id), name=new_name)
+            except AttributeError:
+                setattr(plant, "name", new_name)
+                try:
+                    await uow.plants.save(plant)
+                except AttributeError:
+                    # иногда репозитории используют commit на unit_of_work
+                    pass
+    except Exception:
+        await state.clear()
+        await m.answer("Не удалось переименовать 😕")
+        return await show_plants_list(m, page=page, species_id=species_id, auto_answer=False)
+
+    await state.clear()
+    await m.answer(f"Имя обновлено: <b>{new_name}</b> ✅")
+    return await show_plants_list(m, page=page, species_id=species_id, auto_answer=False)
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_species:"))
+async def on_edit_species(cb: types.CallbackQuery, state: FSMContext):
+    # формат: plants:edit_species:{plant_id}:{page}:{species_id or 0}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); page = int(parts[3])
+    except Exception:
+        return await cb.answer("Не получилось", show_alert=True)
+
+    user = await _get_user(cb.from_user.id)
+    species = await _get_species(user.id)
+    text = "🧬 Выберите <b>вид</b> из списка или введите свой."
+    await cb.message.edit_text(
+        text,
+        reply_markup=kb_edit_species_list(species=species, selected_id=None, page=1, plant_id=plant_id, prefix=PREFIX),
+    )
+    await cb.answer()
+
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_species_page"))
+async def on_edit_species_page(cb: types.CallbackQuery):
+    # формат: plants:edit_species_page:{plant_id}:{page}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); page = int(parts[3])
+    except Exception:
+        return await cb.answer("Не получилось", show_alert=True)
+
+    user = await _get_user(cb.from_user.id)
+    species = await _get_species(user.id)
+    text = "🧬 Выберите <b>вид</b> из списка или введите свой."
+    await cb.message.edit_text(
+        text,
+        reply_markup=kb_edit_species_list(species=species, selected_id=None, page=page, plant_id=plant_id, prefix=PREFIX),
+    )
+    await cb.answer()
+
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_set_species"))
+async def on_edit_set_species(cb: types.CallbackQuery):
+    # формат: plants:edit_set_species:{plant_id}:{species_id}:{page}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); species_id = int(parts[3]) or None; page = int(parts[4])
+    except Exception:
+        return await cb.answer("Не получилось выбрать вид", show_alert=True)
+
+    try:
+        async with new_uow() as uow:
+            me = await uow.users.get(cb.from_user.id)
+            plant = await uow.plants.get(plant_id)
+            if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
+                return await cb.answer("Недоступно", show_alert=True)
+
+            if species_id is not None:
+                sp = await uow.species.get(species_id)
+                if not sp or getattr(sp, "user_id", None) != getattr(me, "id", None):
+                    return await cb.answer("Недоступно или вид не найден", show_alert=True)
+
+            # update с fallback
+            try:
+                await uow.plants.update(plant_id, species_id=species_id)
+            except AttributeError:
+                setattr(plant, "species_id", species_id)
+                try:
+                    await uow.plants.save(plant)
+                except AttributeError:
+                    pass
+    except Exception:
+        await cb.answer("Не удалось обновить вид", show_alert=True)
+        return
+
+    await cb.answer("Вид обновлён ✅", show_alert=False)
+    return await on_edit_pick(cb)  # показать меню действий для этого растения заново
+
+
+@plants_router.callback_query(F.data.startswith(f"{PREFIX}:edit_species_add_text"))
+async def on_edit_species_add_text(cb: types.CallbackQuery, state: FSMContext):
+    # формат: plants:edit_species_add_text:{plant_id}:{page}
+    parts = cb.data.split(":")
+    try:
+        plant_id = int(parts[2]); page = int(parts[3])
+    except Exception:
+        return await cb.answer("Не получилось", show_alert=True)
+
+    await state.set_state(EditPlantStates.waiting_new_species_text)
+    await state.update_data(edit_plant_id=plant_id, edit_page=page)
+    sent = await cb.message.edit_text("✍️ Введите название <b>вида</b> сообщением.")
+    await _remember_bot_message(state, sent)
+    await cb.answer()
+
+
+@plants_router.message(EditPlantStates.waiting_new_species_text)
+async def input_new_species_text(m: types.Message, state: FSMContext):
+    await _clear_prev_markup_if_any(state, m.bot)
+    species_name = (m.text or "").strip()
+    if not species_name:
+        return await m.answer("Вид пустой. Введите ещё раз или напишите «Отмена».")
+    data = await state.get_data()
+    plant_id = int(data.get("edit_plant_id")); page = data.get("edit_page", 1)
+
+    try:
+        async with new_uow() as uow:
+            me = await uow.users.get(m.from_user.id)
+            plant = await uow.plants.get(plant_id)
+            if not plant or getattr(plant, "user_id", None) != getattr(me, "id", None):
+                await state.clear()
+                return await m.answer("Недоступно")
+
+            sp = await uow.species.get_by_name(user_id=me.id, name=species_name)
+            if not sp:
+                sp = await uow.species.create(user_id=me.id, name=species_name)
+
+            # update с fallback
+            try:
+                await uow.plants.update(plant_id, species_id=getattr(sp, "id", None))
+            except AttributeError:
+                setattr(plant, "species_id", getattr(sp, "id", None))
+                try:
+                    await uow.plants.save(plant)
+                except AttributeError:
+                    pass
+    except Exception:
+        await state.clear()
+        await m.answer("Не удалось обновить вид 😕")
+        return await show_plants_list(m, page=page, species_id=None, auto_answer=False)
+
+    await state.clear()
+    await m.answer(f"Вид обновлён: <b>{species_name}</b> ✅")
+    return await show_plants_list(m, page=page, species_id=None, auto_answer=False)
