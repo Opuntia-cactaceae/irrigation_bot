@@ -55,15 +55,11 @@ def _job_id(schedule_id: int) -> str:
     return f"sch:{schedule_id}"
 
 
-def _is_interval_type(t) -> bool:
-    if t == ScheduleType.INTERVAL:
-        return True
-    if t == ScheduleType.WEEKLY:
-        return False
+def _is_interval_type(t: ScheduleType | str) -> bool:
+    if isinstance(t, ScheduleType):
+        return t is ScheduleType.INTERVAL
     if isinstance(t, str):
-        return t == "interval"
-    if hasattr(t, "value"):
-        return t.value == "interval"
+        return t.upper() == "INTERVAL"
     return False
 
 
@@ -141,6 +137,9 @@ async def send_reminder(pending_id: int):
     logger.info("[JOB START] pending_id=%s", pending_id)
     bot = Bot(token=settings.BOT_TOKEN)
 
+    schedule_id: int | None = None
+    commit_ok = False
+
     try:
         async with new_uow() as uow:
 
@@ -154,6 +153,8 @@ async def send_reminder(pending_id: int):
                 logger.warning("[JOB SKIP] schedule_id=%s inactive/missing", getattr(sch, "id", None))
                 return
 
+            schedule_id = sch.id
+
             user: User = sch.plant.user
             plant: Plant = sch.plant
 
@@ -161,14 +162,13 @@ async def send_reminder(pending_id: int):
             title = sch.action.title_ru()
             base_text = f"{emoji} {title}: {plant.name}"
 
-
+            # владелец
             try:
                 msg = await bot.send_message(
                     user.id,
                     base_text,
                     reply_markup=_build_action_kb_for_pending(pending.id, True),
                 )
-
                 await uow.action_pending_messages.create(
                     pending_id=pending.id,
                     chat_id=user.id,
@@ -178,13 +178,13 @@ async def send_reminder(pending_id: int):
                     share_member_id=None,
                 )
                 logger.info(
-                    "[SEND OK OWNER] user_id=%s plant_id=%s action=%s pending_id=%s",
-                    user.id, plant.id, sch.action, pending.id,
+                    "[SEND OK OWNER] user_id=%s plant_id=%s action=%s pending_id=%s buttons=%s",
+                    user.id, plant.id, sch.action, pending.id, True,
                 )
             except Exception as e:
                 logger.exception("[SEND ERR OWNER] pending_id=%s schedule_id=%s: %s", pending.id, sch.id, e)
 
-
+            # подписчики
             try:
                 shares = await uow.share_links.list_links(sch.id)
             except Exception:
@@ -194,7 +194,7 @@ async def send_reminder(pending_id: int):
             owner_mention = (f"@{user.tg_username}" if user.tg_username else f"id{user.id}")
             sub_text = f"{base_text}\n\n(Уведомление из расписания пользователя {owner_mention})"
 
-            for share in shares or []:
+            for share in shares:
                 if not getattr(share, "is_active", True):
                     continue
                 try:
@@ -219,7 +219,6 @@ async def send_reminder(pending_id: int):
                             sub_text,
                             reply_markup=_build_action_kb_for_pending(pending.id, can_complete),
                         )
-
                         await uow.action_pending_messages.create(
                             pending_id=pending.id,
                             chat_id=m.subscriber_user_id,
@@ -239,12 +238,20 @@ async def send_reminder(pending_id: int):
                         )
 
             await uow.commit()
+            commit_ok = True
 
     finally:
-        await bot.session.close()
+        try:
+            await bot.session.close()
+        except Exception:
+            logger.exception("[BOT CLOSE ERR] pending_id=%s", pending_id)
 
-    await plan_next_for_schedule(sch.id)
+    if schedule_id is not None and commit_ok:
+        await plan_next_for_schedule(schedule_id)
 
+
+# bot/scheduler.py
+from sqlalchemy.exc import IntegrityError
 
 async def plan_next_for_schedule(
     schedule_id: int,
@@ -255,6 +262,7 @@ async def plan_next_for_schedule(
     async with new_uow() as uow:
         sch = await uow.jobs.get_schedule(schedule_id)
         if not sch or not sch.active:
+            # удаляем задачу, если расписание выключено/удалено
             try:
                 scheduler.remove_job(_job_id(schedule_id))
                 logger.info("[JOB REMOVED] schedule_id=%s", schedule_id)
@@ -266,6 +274,7 @@ async def plan_next_for_schedule(
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
+        # 1) считаем целевую дату запуска
         if run_at_override_utc is None:
             last_db_dt, last_db_src = await uow.action_logs.last_effective_done(sch.id)
             candidates: list[tuple[datetime, ActionSource]] = []
@@ -276,39 +285,54 @@ async def plan_next_for_schedule(
 
             last_dt, last_src = (max(candidates, key=lambda x: x[0]) if candidates else (None, None))
 
-            run_at = (
-                next_by_interval(last_dt, sch.interval_days, sch.local_time, tz, now_utc)
-                if _is_interval_type(sch.type)
-                else next_by_weekly(
-                    last_done_utc=last_dt,
-                    last_done_source=last_src,
-                    weekly_mask=sch.weekly_mask,
-                    local_t=sch.local_time,
-                    tz_name=tz,
-                    now_utc=now_utc,
-                )
+            run_at = _calc_next_run_utc(
+                sch=sch,
+                user_tz=tz,
+                last_event_utc=last_dt,
+                last_event_source=last_src,
+                now_utc=now_utc,
             )
         else:
             run_at = run_at_override_utc
 
-        found = await uow.action_pendings.find_by_unique(
+
+        deleted = await uow.action_pendings.delete_future_for_schedule(
             schedule_id=sch.id,
-            planned_run_at_utc=run_at,
+            from_utc=now_utc,
         )
-        if found:
-            pending_id = found.id
-        else:
-            created = await uow.action_pendings.create(
+        if deleted:
+            logger.info("[PENDING CLEANUP] schedule_id=%s deleted=%s from_utc=%s",
+                        sch.id, deleted, now_utc.isoformat())
+
+        try:
+            found = await uow.action_pendings.find_by_unique(
                 schedule_id=sch.id,
-                plant_id=sch.plant.id,
-                owner_user_id=sch.plant.user.id,
-                action=sch.action,
                 planned_run_at_utc=run_at,
             )
-            pending_id = created.id if hasattr(created, "id") else int(created)
+            if found:
+                pending_id = found.id
+            else:
+                created = await uow.action_pendings.create(
+                    schedule_id=sch.id,
+                    plant_id=sch.plant.id,
+                    owner_user_id=sch.plant.user.id,
+                    action=sch.action,
+                    planned_run_at_utc=run_at,
+                )
+                pending_id = created.id if hasattr(created, "id") else int(created)
+        except IntegrityError:
+            await uow.rollback()
+            found = await uow.action_pendings.find_by_unique(
+                schedule_id=sch.id,
+                planned_run_at_utc=run_at,
+            )
+            if not found:
+                raise
+            pending_id = found.id
 
         await uow.commit()
 
+        # 4) логируем, в том числе локальное время
         try:
             loc = pytz.timezone(tz)
             logger.info(
@@ -324,7 +348,6 @@ async def plan_next_for_schedule(
                 "[PLAN] schedule_id=%s user_id=%s plant_id=%s action=%s run_at_utc=%s tz=%s pending_id=%s",
                 schedule_id, user.id, sch.plant.id, sch.action, run_at.isoformat(), tz, pending_id,
             )
-
     job_id = _job_id(schedule_id)
     try:
         scheduler.remove_job(job_id)
@@ -367,19 +390,13 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             done_at_utc=done_at_utc,
         )
 
-    if _is_interval_type(sch.type):
-        run_at = next_by_interval(
-            done_at_utc, sch.interval_days, sch.local_time, tz, done_at_utc
-        )
-    else:
-        run_at = next_by_weekly(
-            last_done_utc=done_at_utc,
-            last_done_source=ActionSource.MANUAL,
-            weekly_mask=sch.weekly_mask,
-            local_t=sch.local_time,
-            tz_name=tz,
-            now_utc=done_at_utc,
-        )
+    run_at = _calc_next_run_utc(
+        sch=sch,
+        user_tz=tz,
+        last_event_utc=done_at_utc,
+        last_event_source=ActionSource.MANUAL,
+        now_utc=done_at_utc,
+    )
 
     await plan_next_for_schedule(schedule_id, run_at_override_utc=run_at)
 
@@ -398,14 +415,14 @@ def start_scheduler():
         scheduler.add_listener(
             _on_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED
         )
-        scheduler.add_job(
-            _heartbeat,
-            "interval",
-            seconds=60,
-            id="__hb__",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
+        # scheduler.add_job(
+        #     _heartbeat,
+        #     "interval",
+        #     seconds=60,
+        #     id="__hb__",
+        #     replace_existing=True,
+        #     coalesce=True,
+        #     max_instances=1,
+        # )
         scheduler.start()
         logger.info("[SCHEDULER STARTED]")

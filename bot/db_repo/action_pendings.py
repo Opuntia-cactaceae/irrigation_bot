@@ -141,6 +141,22 @@ class ActionPendingsRepo(BaseRepo):
         # result.rowcount может быть None в некоторых драйверах, поэтому приводим к int
         return int(result.rowcount or 0)
 
+    async def delete_future_for_schedule(self, schedule_id: int, *, from_utc: datetime) -> int:
+        """
+        Удаляет ВСЕ будущие pending'и (planned_run_at_utc >= from_utc) для расписания.
+        Возвращает количество удалённых строк.
+        """
+        stmt = (
+            delete(ActionPending)
+            .where(
+                ActionPending.schedule_id == schedule_id,
+                ActionPending.planned_run_at_utc >= from_utc,
+            )
+        )
+        res = await self.session.execute(stmt)
+        # В разных драйверах rowcount может быть None — норм.
+        return getattr(res, "rowcount", None) or 0
+
     # ────────────────────────────── HELPERS ───────────────────────────────────
     async def is_resolved(self, pending_id: int) -> bool:
         q = select(ActionPending.resolved_status).where(ActionPending.id == pending_id)
