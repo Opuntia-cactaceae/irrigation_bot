@@ -11,7 +11,8 @@ from bot.db_repo.models import (
     User, Plant, Schedule, ActionType, ScheduleType, ActionSource, ActionStatus,
     ShareLink, ShareMember, ShareMemberStatus, ShareLinkSchedule,
 )
-from .rules import next_by_interval, next_by_weekly, _localize_day_bounds, compute_window, _safe_tz, _utc_from_local
+from .rules import _localize_day_bounds, compute_window, _safe_tz, _utc_from_local, next_by_weekly, next_by_interval
+from bot.scheduler import _calc_next_run_utc
 
 Mode = Literal["upc", "hist"]
 
@@ -86,7 +87,7 @@ def iter_interval_occurrences_strict(
     *,
     last_dt_utc: Optional[datetime],
     interval_days: int,
-    local_t,
+    local_t: time,
     tz_name: str,
     tz,
     start_utc: datetime,
@@ -94,53 +95,43 @@ def iter_interval_occurrences_strict(
     now_utc: Optional[datetime] = None,
 ) -> Iterator[datetime]:
     """
-    Генератор наступлений интервалов в окне [start_utc, end_utc] БЕЗ сдвига базового времени страницы.
-    База берётся так же, как в старой логике: last_dt_utc (если есть) иначе — реальный now (UTC).
-
-    Алгоритм:
-    1) Находим ближайшее НАСТУПАЮЩЕЕ (относительно "реального" now) событие по интервалу.
-    2) От него арифметически прыгаем вперёд/назад, чтобы найти первое попадание в окно.
-    3) Дальше идём шагом interval_days по локальным датам до конца окна.
+    Строго согласовано с планировщиком:
+    1) Первое наступление считаем через rules.next_by_interval(...) с реальным now_utc.
+    2) Если оно раньше окна — докручиваем вперёд шагом interval_days по ЛОКАЛЬНОЙ дате.
+    3) Дальше — до конца окна тем же шагом.
     """
     if interval_days <= 0:
         return
 
-    tz_local = tz
-    start_local_day = start_utc.astimezone(tz_local).date()
-    end_local_day = end_utc.astimezone(tz_local).date()
-
     _now_utc = now_utc or datetime.now(pytz.UTC)
 
-    if last_dt_utc:
-        anchor_local_date = last_dt_utc.astimezone(tz_local).date()
-        first_future_date = anchor_local_date + timedelta(days=interval_days)
-        if first_future_date < _now_utc.astimezone(tz_local).date():
-            lag = (_now_utc.astimezone(tz_local).date() - first_future_date).days
-            steps = lag // interval_days + 1
-            first_future_date = first_future_date + timedelta(days=steps * interval_days)
-    else:
-        first_future_date = _now_utc.astimezone(tz_local).date() + timedelta(days=interval_days)
+    # 1) первая дата — ровно как у шедулера/отметки
+    first_utc = next_by_interval(
+        last_utc=last_dt_utc,
+        interval_days=interval_days,
+        local_t=local_t,
+        tz_name=tz_name,
+        now_utc=_now_utc,
+    )
 
-    if first_future_date < start_local_day:
-        lag = (start_local_day - first_future_date).days
-        k = (lag + interval_days - 1) // interval_days
-        first_in_window_date = first_future_date + timedelta(days=k * interval_days)
-    else:
-        lag = (first_future_date - start_local_day).days
-        k_back = lag // interval_days
-        first_in_window_date = first_future_date - timedelta(days=k_back * interval_days)
-        if first_in_window_date < start_local_day:
-            first_in_window_date += timedelta(days=interval_days)
+    # 2) докручиваем до границы окна, если нужно
+    cur_utc = first_utc
+    if cur_utc < start_utc:
+        while True:
+            cur_local = cur_utc.astimezone(tz)
+            next_local_date = cur_local.date() + timedelta(days=interval_days)
+            next_local_dt = datetime.combine(next_local_date, local_t)
+            cur_utc = _utc_from_local(next_local_dt, tz_name)
+            if cur_utc >= start_utc:
+                break
 
-    d = first_in_window_date
-    while d <= end_local_day:
-        occ_local = datetime.combine(d, local_t)
-        occ_utc = _utc_from_local(occ_local, tz_name)
-        if occ_utc > end_utc:
-            break
-        if occ_utc >= start_utc:
-            yield occ_utc
-        d += timedelta(days=interval_days)
+    # 3) отдаём все наступления, попавшие в окно
+    while cur_utc <= end_utc:
+        yield cur_utc
+        cur_local = cur_utc.astimezone(tz)
+        next_local_date = cur_local.date() + timedelta(days=interval_days)
+        next_local_dt = datetime.combine(next_local_date, local_t)
+        cur_utc = _utc_from_local(next_local_dt, tz_name)
 
 def iter_weekly_occurrences(*,
     last_dt_utc: datetime | None,
@@ -152,31 +143,42 @@ def iter_weekly_occurrences(*,
     start_utc: datetime,
     end_utc: datetime
 ) -> Iterator[datetime]:
-    base_now = start_utc - timedelta(seconds=1)
-    first_utc = next_by_weekly(
+    now_utc = datetime.now(pytz.UTC)
+
+    # 1) первая дата — ровно как у шедулера/отметки
+    cur_utc = next_by_weekly(
         last_done_utc=last_dt_utc,
         last_done_source=last_src,
         weekly_mask=weekly_mask,
         local_t=local_t,
         tz_name=tz_name,
-        now_utc=base_now,
+        now_utc=now_utc,
     )
-    if first_utc > end_utc:
-        return
-    if first_utc >= start_utc:
-        yield first_utc
-    cur_date = first_utc.astimezone(tz).date()
-    d = cur_date + timedelta(days=1)
-    end_local_day = end_utc.astimezone(tz).date()
-    while d <= end_local_day:
-        if weekly_mask & (1 << d.weekday()):
-            occ_local = datetime.combine(d, local_t)
-            occ_utc = _utc_from_local(occ_local, tz_name)
-            if occ_utc > end_utc:
-                break
-            if occ_utc >= start_utc:
-                yield occ_utc
-        d += timedelta(days=1)
+
+    # 2) докручиваем до окна, если нужно
+    while cur_utc < start_utc:
+        cur_utc = next_by_weekly(
+            last_done_utc=cur_utc,
+            last_done_source=ActionSource.SCHEDULE,
+            weekly_mask=weekly_mask,
+            local_t=local_t,
+            tz_name=tz_name,
+            now_utc=now_utc,
+        )
+
+    # 3) отдаём все попадания в окне
+    while cur_utc <= end_utc:
+        yield cur_utc
+
+        # следующий — снова через next_by_weekly, трактуя текущий как «последнее выполненное»
+        cur_utc = next_by_weekly(
+            last_done_utc=cur_utc,
+            last_done_source=ActionSource.SCHEDULE,
+            weekly_mask=weekly_mask,
+            local_t=local_t,
+            tz_name=tz_name,
+            now_utc=now_utc,
+        )
 
 def make_feed_item(dt_utc: datetime, tz: pytz.BaseTzInfo, s: "Schedule", plant_name: str, is_sub: bool = False) -> FeedItem:
     return FeedItem(

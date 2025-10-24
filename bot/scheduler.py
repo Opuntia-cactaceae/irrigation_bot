@@ -274,7 +274,7 @@ async def plan_next_for_schedule(
         tz = user.tz
         now_utc = datetime.now(tz=pytz.UTC)
 
-        # 1) считаем целевую дату запуска
+
         if run_at_override_utc is None:
             last_db_dt, last_db_src = await uow.action_logs.last_effective_done(sch.id)
             candidates: list[tuple[datetime, ActionSource]] = []
