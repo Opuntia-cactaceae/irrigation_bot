@@ -31,6 +31,14 @@ def _utc_from_local(local_dt: datetime, tz_name: str) -> datetime:
     aware = _localize_safe(tz, local_dt)
     return aware.astimezone(pytz.UTC)
 
+def _compute_interval_anchor_utc(tz_name: str, local_time, now_utc: datetime) -> datetime:
+    tz = pytz.timezone(tz_name or "UTC")
+    now_local = now_utc.astimezone(tz)
+    today_local = datetime.combine(now_local.date(), local_time)
+    anchor_local = today_local if tz.localize(today_local) <= now_local \
+                   else datetime.combine(now_local.date() - timedelta(days=1), local_time)
+    return tz.localize(anchor_local).astimezone(pytz.UTC)
+
 
 def next_by_interval(
     last_utc: Optional[datetime],

@@ -32,7 +32,7 @@ from bot.db_repo.models import (
     ActionPendingMessage,
 )
 from bot.db_repo.unit_of_work import new_uow
-from bot.services.rules import next_by_interval, next_by_weekly
+from bot.services.rules import next_by_interval, next_by_weekly, _compute_interval_anchor_utc
 
 class RemindCb(CallbackData, prefix="r"):
     action: str
@@ -275,9 +275,23 @@ async def plan_next_for_schedule(
         now_utc = datetime.now(tz=pytz.UTC)
 
 
+
+
         if run_at_override_utc is None:
             last_db_dt, last_db_src = await uow.action_logs.last_effective_done(sch.id)
             candidates: list[tuple[datetime, ActionSource]] = []
+
+            if _is_interval_type(sch.type) and not last_db_dt:
+                anchor_utc = _compute_interval_anchor_utc(
+                    tz_name=tz,
+                    local_time=sch.local_time,
+                    now_utc=now_utc,
+                )
+                if getattr(sch, "created_at", None) and anchor_utc < sch.created_at:
+                    anchor_utc = sch.created_at
+                await manual_done_and_reschedule(schedule_id, done_at_utc=anchor_utc)
+                return
+
             if last_db_dt:
                 candidates.append((last_db_dt, last_db_src or ActionSource.SCHEDULE))
             if last_override_utc:

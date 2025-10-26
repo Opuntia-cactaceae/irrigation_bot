@@ -8,7 +8,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from bot.db_repo.unit_of_work import new_uow
 from bot.db_repo.models import ActionStatus, ActionSource
-from bot.scheduler import RemindCb, plan_next_for_schedule
+from bot.scheduler import RemindCb, plan_next_for_schedule, logger
 
 router = Router(name="remind_actions")
 
@@ -23,6 +23,10 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
     - При установке статуса обновляем ВСЕ сообщения по pending: снимаем клавиатуру и добавляем суффикс.
     """
     pending_id = int(callback_data.pending_id)
+    logger.info(
+        "[PENDING RESOLVE] pending_id=%s",
+                pending_id,
+    )
     action = callback_data.action
     status = ActionStatus.DONE if action == "done" else ActionStatus.SKIPPED
     actor_id = cb.from_user.id
@@ -130,6 +134,15 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
                 at_utc=datetime.now(timezone.utc),
                 log_id=log_id,
             )
+            logger.info(
+                "[PENDING RESOLVE] pending_id=%s | status=%s | source=%s | by_user_id=%s | at_utc=%s | log_id=%s",
+                pending_id,
+                status,
+                source,
+                actor_id,
+                datetime.now(timezone.utc),
+                log_id,
+            )
         except Exception:
             await cb.answer("Не удалось обновить напоминание", show_alert=True)
             return
@@ -184,6 +197,9 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
     if status == ActionStatus.DONE:
         try:
             await plan_next_for_schedule(sch.id)
+            logger.info(
+                "[PENDING RESOLVE] Done"
+            )
         except Exception:
             pass
 

@@ -107,6 +107,7 @@ class ActionPendingsRepo(BaseRepo):
             )
         )
 
+
     async def clear_resolution(self, pending_id: int) -> None:
         """
         Сбрасывает резолюцию (на случай отката).
