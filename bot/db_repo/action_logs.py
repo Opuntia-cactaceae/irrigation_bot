@@ -27,22 +27,60 @@ class ActionLogsRepo(BaseRepo):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
 
+    async def _resolve_owner_from_ids(
+            self, *, schedule_id: int | None, plant_id: int | None
+    ) -> int | None:
+        # 1) сперва через расписание -> plant -> owner
+        if schedule_id is not None:
+            res = await self.session.execute(
+                select(Plant.user_id).join(Schedule, Schedule.plant_id == Plant.id).where(Schedule.id == schedule_id)
+            )
+            owner = res.scalar_one_or_none()
+            if owner is not None:
+                return owner
+
+        # 2) иначе попробуем по plant_id
+        if plant_id is not None:
+            res = await self.session.execute(
+                select(Plant.user_id).where(Plant.id == plant_id)
+            )
+            owner = res.scalar_one_or_none()
+            if owner is not None:
+                return owner
+
+        return None
+
     # ---------- Create ----------
     async def create(
-        self,
-        *,
-        user_id: int,
-        action: ActionType,
-        status: ActionStatus,
-        source: ActionSource,
-        plant_id: int | None = None,
-        schedule_id: int | None = None,
-        done_at_utc: datetime | None = None,
-        plant_name_at_time: str | None = None,
-        note: str | None = None,
+            self,
+            *,
+            user_id: int,  # кто совершил действие (actor)
+            action: ActionType,
+            status: ActionStatus,
+            source: ActionSource,
+            plant_id: int | None = None,
+            schedule_id: int | None = None,
+            done_at_utc: datetime | None = None,
+            plant_name_at_time: str | None = None,
+            note: str | None = None,
+            # новенькое:
+            owner_user_id: int | None = None,  # владелец растения (желательно передавать)
+            share_id: int | None = None,
+            share_member_id: int | None = None,
     ) -> ActionLog:
+
+        # если owner не передали — попробуем определить по schedule/plant
+        if owner_user_id is None:
+            owner_user_id = await self._resolve_owner_from_ids(
+                schedule_id=schedule_id, plant_id=plant_id
+            )
+        # финальный запасной вариант — автор и владелец совпадают
+        if owner_user_id is None:
+            owner_user_id = user_id
+
         log = ActionLog(
             user_id=user_id,
+            owner_user_id=owner_user_id,
             plant_id=plant_id,
             schedule_id=schedule_id,
             action=action,
@@ -51,23 +89,29 @@ class ActionLogsRepo(BaseRepo):
             done_at_utc=done_at_utc,
             plant_name_at_time=plant_name_at_time,
             note=note,
+            share_id=share_id,
+            share_member_id=share_member_id,
         )
         return await self.add(log)
 
     # Удобные конструкторы от расписания/растения
     async def create_from_schedule(
-        self,
-        *,
-        schedule: Schedule,
-        status: ActionStatus,
-        source: ActionSource = ActionSource.SCHEDULE,
-        done_at_utc: datetime | None = None,
-        note: str | None = None,
+            self,
+            *,
+            schedule: Schedule,
+            status: ActionStatus,
+            source: ActionSource = ActionSource.SCHEDULE,
+            done_at_utc: datetime | None = None,
+            note: str | None = None,
+            # опционально позволим переопределить actor при автособытиях
+            user_id: int | None = None,
+            share_id: int | None = None,
+            share_member_id: int | None = None,
     ) -> ActionLog:
         plant = schedule.plant
-        print("in create_from_schedule")
         return await self.create(
-            user_id=plant.user.id,
+            user_id=(user_id or plant.user.id),  # actor (обычно владелец для авто-логов)
+            owner_user_id=plant.user.id,  # владелец явно
             plant_id=plant.id,
             schedule_id=schedule.id,
             action=schedule.action,
@@ -76,30 +120,52 @@ class ActionLogsRepo(BaseRepo):
             done_at_utc=done_at_utc,
             plant_name_at_time=plant.name,
             note=note,
+            share_id=share_id,
+            share_member_id=share_member_id,
         )
 
     async def create_manual(
-        self,
-        *,
-        user: User,
-        action: ActionType,
-        plant: Plant | None = None,
-        schedule: Schedule | None = None,
-        status: ActionStatus = ActionStatus.DONE,
-        done_at_utc: datetime | None = None,
-        note: str | None = None,
+            self,
+            *,
+            user: User,  # actor
+            action: ActionType,
+            plant: Plant | None = None,
+            schedule: Schedule | None = None,
+            status: ActionStatus = ActionStatus.DONE,
+            done_at_utc: datetime | None = None,
+            note: str | None = None,
+            share_id: int | None = None,
+            share_member_id: int | None = None,
     ) -> ActionLog:
-        print("inCRCR")
+        if schedule:
+            owner_user_id = schedule.plant.user.id
+            plant_id = schedule.plant.id
+            schedule_id = schedule.id
+            plant_name = schedule.plant.name
+        elif plant:
+            owner_user_id = plant.user.id
+            plant_id = plant.id
+            schedule_id = None
+            plant_name = plant.name
+        else:
+            owner_user_id = user.id
+            plant_id = None
+            schedule_id = None
+            plant_name = None
+
         return await self.create(
             user_id=user.id,
-            plant_id=plant.id if plant else None,
-            schedule_id=schedule.id if schedule else None,
+            owner_user_id=owner_user_id,
+            plant_id=plant_id,
+            schedule_id=schedule_id,
             action=action,
             status=status,
             source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
-            plant_name_at_time=(plant.name if plant else None),
+            plant_name_at_time=plant_name,
             note=note,
+            share_id=share_id,
+            share_member_id=share_member_id,
         )
 
     # ---------- Get / lists ----------

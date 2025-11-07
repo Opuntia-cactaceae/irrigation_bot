@@ -249,7 +249,15 @@ class ActionLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
+    # кто совершил действие (actor)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE")
+    )
+
+    # ВЛАДЕЛЕЦ растения на момент лога (исторически значимо)
+    owner_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
 
     plant_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("plants.id", ondelete="SET NULL"), index=True, nullable=True

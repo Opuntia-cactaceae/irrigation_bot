@@ -159,15 +159,62 @@ async def on_quick_done_callbacks(cb: types.CallbackQuery):
                 return await show_quick_done_menu(cb)
 
             me = await uow.users.get(cb.from_user.id)
-            if getattr(plant, "user_id", None) != getattr(me, "id", None):
+            is_owner = getattr(plant, "user_id", None) == getattr(me, "id", None)
+
+            granted_share = None
+            granted_member = None
+
+            if not is_owner:
+                try:
+                    shares = await uow.share_links.list_links(sch.id)  # все шары, где участвует это расписание
+                except Exception:
+                    shares = []
+
+                for share in shares or []:
+                    if not getattr(share, "is_active", True):
+                        continue
+                    try:
+                        members = await uow.share_members.list_active_by_share(share.id)
+                    except Exception:
+                        members = []
+
+                    for m in members:
+                        if m.subscriber_user_id != getattr(me, "id", None):
+                            continue
+                        if getattr(m, "muted", False):
+                            continue
+
+                        can_complete = (
+                            m.can_complete_override
+                            if m.can_complete_override is not None
+                            else bool(getattr(share, "allow_complete_default", False))
+                        )
+
+                        if can_complete:
+                            granted_share = share
+                            granted_member = m
+                            break
+                    if granted_share:
+                        break
+
+            if not is_owner and not granted_share:
                 await cb.answer("Недоступно", show_alert=True)
                 return
 
         try:
-            print("in")
-            await manual_done_and_reschedule(schedule_id)
-        except Exception:
-            raise
+            if is_owner:
+                await manual_done_and_reschedule(schedule_id)
+            else:
+                await manual_done_and_reschedule(
+                    schedule_id,
+                    user_id=cb.from_user.id,
+                    share_id=getattr(granted_share, "id", None),
+                    share_member_id=getattr(granted_member, "id", None),
+                )
+        except Exception as e:
+            print(f"[quick_done] Error: {e}")
+            await cb.answer("Не получилось отметить", show_alert=True)
+            return
 
         await cb.answer("Отмечено ✅", show_alert=False)
         return await show_quick_done_menu(cb)

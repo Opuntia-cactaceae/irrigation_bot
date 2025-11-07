@@ -1,6 +1,7 @@
 # bot/handlers/remind_actions.py
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from aiogram import Router, types
@@ -13,41 +14,66 @@ from bot.scheduler import RemindCb, plan_next_for_schedule, logger
 router = Router(name="remind_actions")
 
 
+async def safe_answer(cb: types.CallbackQuery, text: str | None = None, show_alert: bool = False):
+    try:
+        await cb.answer(text or "", show_alert=show_alert)
+    except TelegramBadRequest as e:
+        s = str(e).lower()
+        if "query is too old" in s or "query id is invalid" in s:
+            return
+        raise
+
+
+async def safe_edit_text_or_caption(
+    bot: types.Bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    *,
+    keep_reply_markup: bool = False,
+):
+    try:
+        if keep_reply_markup:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+        else:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=None)
+        return
+    except TelegramBadRequest as e1:
+        s1 = str(e1).lower()
+        if "message is not modified" in s1:
+            return
+        logger.exception(s1)
+    except Exception:
+        return
+
 @router.callback_query(RemindCb.filter())
 async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
     """
     Логика:
-    - Разрешения: владелец всегда может; подписчик — только если share разрешает.
-    - Если подписчик пометил "Пропустить", владелец может позже пометить "Сделано" (override).
+    - Владелец всегда может; подписчик — если разрешено.
+    - Если подписчик пометил "Пропустить", владелец может позже пометить "Сделано".
     - Если владелец пометил "Пропустить", больше никто не может менять статус.
-    - При установке статуса обновляем ВСЕ сообщения по pending: снимаем клавиатуру и добавляем суффикс.
+    - При установке статуса обновляем все сообщения по pending: снимаем клавиатуру и добавляем суффикс.
     """
+
     pending_id = int(callback_data.pending_id)
-    logger.info(
-        "[PENDING RESOLVE] pending_id=%s",
-                pending_id,
-    )
     action = callback_data.action
     status = ActionStatus.DONE if action == "done" else ActionStatus.SKIPPED
     actor_id = cb.from_user.id
 
-    try:
-        if cb.message:
-            await cb.message.edit_reply_markup(reply_markup=None)
-    except TelegramBadRequest:
-        pass
-    except Exception:
-        pass
+    logger.info("[PENDING RESOLVE] pending_id=%s | incoming cb from %s", pending_id, actor_id)
+
+    asyncio.create_task(safe_answer(cb))
 
     async with new_uow() as uow:
         pending = await uow.action_pendings.get(pending_id)
         if not pending:
-            await cb.answer("Напоминание не найдено", show_alert=True)
+            await safe_answer(cb, "Напоминание не найдено", show_alert=True)
             return
 
         sch = await uow.jobs.get_schedule(pending.schedule_id)
         if not sch or not getattr(sch, "active", True):
-            await cb.answer("Расписание не найдено или отключено", show_alert=True)
+            await safe_answer(cb, "Расписание не найдено или отключено", show_alert=True)
             return
 
         plant = sch.plant
@@ -56,6 +82,9 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
 
         allowed = is_owner
         source: ActionSource = ActionSource.SCHEDULE if is_owner else ActionSource.SHARED
+        granted_share = None
+        granted_member = None
+
         if not allowed:
             try:
                 shares = await uow.share_links.list_links(sch.id)
@@ -69,9 +98,7 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
                 except Exception:
                     members = []
                 for m in members:
-                    if m.subscriber_user_id != actor_id:
-                        continue
-                    if getattr(m, "muted", False):
+                    if m.subscriber_user_id != actor_id or getattr(m, "muted", False):
                         continue
                     can_complete = (
                         m.can_complete_override
@@ -81,31 +108,35 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
                     if can_complete:
                         allowed = True
                         source = ActionSource.SHARED
+                        granted_share = share
+                        granted_member = m
                         break
                 if allowed:
                     break
 
         if getattr(pending, "resolved_status", None) == ActionStatus.DONE:
-            await cb.answer("Уже отмечено ✅", show_alert=False)
+            await safe_answer(cb, "Уже отмечено ✅")
             return
 
         if (
             getattr(pending, "resolved_status", None) == ActionStatus.SKIPPED
             and getattr(pending, "resolved_by_user_id", None) == owner_user_id
         ):
-            await cb.answer("Владелец пропустил — отметить нельзя", show_alert=True)
+            await safe_answer(cb, "Владелец пропустил — отметить нельзя", show_alert=True)
             return
 
         if getattr(pending, "resolved_status", None) == ActionStatus.SKIPPED:
             if is_owner and status == ActionStatus.DONE:
                 allowed = True
                 source = ActionSource.SCHEDULE
+                granted_share = None
+                granted_member = None
             else:
-                await cb.answer("Недоступно", show_alert=True)
+                await safe_answer(cb, "Недоступно", show_alert=True)
                 return
 
         if not allowed:
-            await cb.answer("Недоступно", show_alert=True)
+            await safe_answer(cb, "Недоступно", show_alert=True)
             return
 
         try:
@@ -118,11 +149,14 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
                 source=source,
                 done_at_utc=datetime.now(timezone.utc),
                 plant_name_at_time=plant.name,
+                share_id=(granted_share.id if source == ActionSource.SHARED and granted_share else None),
+                share_member_id=(granted_member.id if source == ActionSource.SHARED and granted_member else None),
                 note=None,
             )
             log_id = getattr(log, "id", None)
-        except Exception:
-            await cb.answer("Не удалось сохранить действие", show_alert=True)
+        except Exception as e:
+            await safe_answer(cb, "Не удалось сохранить действие", show_alert=True)
+            logger.exception(e)
             return
 
         try:
@@ -135,16 +169,12 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
                 log_id=log_id,
             )
             logger.info(
-                "[PENDING RESOLVE] pending_id=%s | status=%s | source=%s | by_user_id=%s | at_utc=%s | log_id=%s",
-                pending_id,
-                status,
-                source,
-                actor_id,
-                datetime.now(timezone.utc),
-                log_id,
+                "[PENDING RESOLVE] pending_id=%s | status=%s | source=%s | by_user_id=%s | log_id=%s",
+                pending_id, status, source, actor_id, log_id,
             )
-        except Exception:
-            await cb.answer("Не удалось обновить напоминание", show_alert=True)
+        except Exception as e:
+            await safe_answer(cb, "Не удалось обновить напоминание", show_alert=True)
+            logger.exception(e)
             return
 
         emoji = sch.action.emoji()
@@ -154,53 +184,55 @@ async def on_remind_action(cb: types.CallbackQuery, callback_data: RemindCb):
             f"@{plant.user.tg_username}" if getattr(plant.user, "tg_username", None) else f"id{plant.user.id}"
         )
         sub_text = f"{base_text}\n\n(Уведомление из расписания пользователя {owner_mention})"
-        suffix = "— отмечено ✅" if status == ActionStatus.DONE else "— пропущено ⏭️"
+        actor_is_owner = (actor_id == owner_user_id)
+        actor_mention = f"@{cb.from_user.username}" if getattr(cb.from_user, "username", None) else f"id{actor_id}"
+        suffix_default = "— отмечено ✅" if status == ActionStatus.DONE else "— пропущено ⏭️"
+        suffix_for_owner_when_subscriber = (
+            f"— отмечено подписчиком {actor_mention} ✅" if status == ActionStatus.DONE
+            else f"— пропущено подписчиком {actor_mention} ⏭️"
+        )
+        suffix_for_others_when_subscriber = suffix_default
 
         try:
             msgs = await uow.action_pending_messages.list_by_pending(pending_id)
-        except Exception:
+        except Exception as e:
+            logger.exception(e)
             msgs = []
 
-
+    tasks = []
     for m in msgs or []:
         chat_id = getattr(m, "chat_id", None)
         message_id = getattr(m, "message_id", None)
         if not chat_id or not message_id:
             continue
 
-        text = base_text if getattr(m, "is_owner", False) else sub_text
-        new_text = f"{text}\n\n{suffix}"
+        is_msg_for_owner = bool(getattr(m, "is_owner", False))
+        text = base_text if is_msg_for_owner else sub_text
 
-        try:
-            await cb.bot.edit_message_text(
+        if actor_is_owner:
+            suffix = suffix_default
+            keep = False
+        else:
+            suffix = suffix_for_owner_when_subscriber if is_msg_for_owner else suffix_for_others_when_subscriber
+            keep = is_msg_for_owner and status == ActionStatus.SKIPPED
+
+        new_text = f"{text}\n\n{suffix}"
+        tasks.append(asyncio.create_task(
+            safe_edit_text_or_caption(
+                cb.bot,
                 chat_id=chat_id,
                 message_id=message_id,
                 text=new_text,
-                reply_markup=None,
+                keep_reply_markup=keep,
             )
-        except TelegramBadRequest as e:
-            try:
-                await cb.bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    caption=new_text,
-                    reply_markup=None,
-                )
-            except TelegramBadRequest:
-                if "message is not modified" not in str(e).lower():
-                    pass
-            except Exception:
-                pass
-        except Exception:
-            pass
+        ))
+    await asyncio.gather(*tasks, return_exceptions=True)
 
     if status == ActionStatus.DONE:
         try:
             await plan_next_for_schedule(sch.id)
-            logger.info(
-                "[PENDING RESOLVE] Done"
-            )
-        except Exception:
-            pass
+            logger.info("[PENDING RESOLVE] next planned for schedule %s", sch.id)
+        except Exception as e:
+            logger.exception(e)
 
-    await cb.answer("Отмечено ✅" if status == ActionStatus.DONE else "Пропущено ⏭️", show_alert=False)
+    await safe_answer(cb, "Отмечено ✅" if status == ActionStatus.DONE else "Пропущено ⏭️", show_alert=False)

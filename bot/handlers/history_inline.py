@@ -115,7 +115,9 @@ async def _get_history_week(
                 plant_id=getattr(lg, "plant_id", None),
                 schedule_id=getattr(lg, "schedule_id", None),
                 plant_name=(getattr(lg, "plant_name_at_time", None) or "(без растения)"),
-                is_shared=bool(getattr(lg, "share_id", None)),
+                is_shared=(
+                                  getattr(lg, "source", None) == ActionSource.SHARED
+                          ) or bool(getattr(lg, "share_id", None)),
                 by_subscriber=(
                         getattr(lg, "source", None) == ActionSource.SHARED
                         or bool(getattr(lg, "share_member_id", None))

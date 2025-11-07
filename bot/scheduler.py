@@ -382,7 +382,14 @@ async def plan_next_for_schedule(
     )
     logger.info('[JOB ADDED] id=%s run_at_utc=%s store="default"', job_id, run_at.isoformat())
 
-async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime | None = None):
+async def manual_done_and_reschedule(
+    schedule_id: int,
+    *,
+    user_id: int | None = None,
+    done_at_utc: datetime | None = None,
+    share_id: int | None = None,
+    share_member_id: int | None = None,
+):
     if done_at_utc is None:
         done_at_utc = datetime.now(tz=pytz.UTC)
 
@@ -392,16 +399,25 @@ async def manual_done_and_reschedule(schedule_id: int, *, done_at_utc: datetime 
             return
 
         plant = await uow.plants.get(sch.plant_id)
-        user  = await uow.users.get(plant.user_id) if plant else None
-        tz    = user.tz if user and getattr(user, "tz", None) else "UTC"
+        if user_id is None:
+            user  = await uow.users.get(plant.user_id) if plant else None
+        else:
+            user = await uow.users.get(user_id)
 
-        await uow.action_logs.create_manual(
-            user=user,
-            plant=plant,
-            schedule=sch,
+        tz = user.tz if user and getattr(user, "tz", None) else "UTC"
+
+        log = await uow.action_logs.create(
+            user_id=user.id,  # кто сделал действие (actor)
+            owner_user_id=plant.user_id,  # владелец растения
+            plant_id=plant.id,
+            schedule_id=sch.id,
             action=sch.action,
             status=ActionStatus.DONE,
+            source=ActionSource.MANUAL,
             done_at_utc=done_at_utc,
+            note=None,
+            share_id=share_id,
+            share_member_id=share_member_id,
         )
 
     run_at = _calc_next_run_utc(
