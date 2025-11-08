@@ -6,7 +6,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
-from aiohttp import ClientTimeout
 
 from bot.config import settings
 from bot.db_repo.base import engine
@@ -46,7 +45,7 @@ async def main():
     await init_db_if_needed()
 
     proxy_url = getattr(settings, "PROXY_URL", None)
-    timeout = ClientTimeout(total=60)
+    timeout=60
 
     session = AiohttpSession(
         proxy=proxy_url,

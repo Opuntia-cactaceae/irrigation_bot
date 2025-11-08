@@ -143,7 +143,7 @@ async def send_reminder(pending_id: int):
     logger.info("[JOB START] pending_id=%s", pending_id)
 
     proxy_url = getattr(settings, "PROXY_URL", None)
-    timeout = ClientTimeout(total=60)
+    timeout = 60
 
     session = AiohttpSession(
         proxy=proxy_url,
