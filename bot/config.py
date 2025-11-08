@@ -5,6 +5,9 @@ class Settings(BaseSettings):
     # === BOT ===
     BOT_TOKEN: str
 
+    # === PROXY ===
+    PROXY_URL: str
+
     # === DATABASE ===
     DATABASE_URL: str                # async для SQLAlchemy
     DATABASE_URL_SYNC: str           # sync для Alembic и APScheduler
