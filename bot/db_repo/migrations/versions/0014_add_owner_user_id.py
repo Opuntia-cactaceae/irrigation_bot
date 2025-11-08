@@ -4,7 +4,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # Alembic identifiers
-revision = "0014_add_owner_user_id_to_action_logs"
+revision = "0014_add_owner_user_id"
 down_revision = "0013_create_action_pendings"
 branch_labels = None
 depends_on = None
