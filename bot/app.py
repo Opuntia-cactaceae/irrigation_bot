@@ -2,9 +2,12 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
+from aiohttp import ClientTimeout, TCPConnector
+from aiohttp_socks import ProxyConnector
 
 from bot.config import settings
 from bot.db_repo.base import engine
@@ -43,10 +46,23 @@ async def main():
 
     await init_db_if_needed()
 
+    proxy_url = getattr(settings, "PROXY_URL", None)
+    timeout = ClientTimeout(total=60)
+
+    session = None
+    if proxy_url:
+        connector = ProxyConnector.from_url(proxy_url)
+        session = AiohttpSession(connector=connector, timeout=timeout)
+        logging.info(f"[BOT] Proxy enabled: {proxy_url}")
+    else:
+        logging.info("[BOT] Proxy not set, using direct connection")
+
     bot = Bot(
         token=settings.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
     )
+
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.include_router(start_router)

@@ -8,8 +8,13 @@ from typing import Optional
 
 import pytz
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.enums import ParseMode
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import ClientTimeout
+from aiohttp_socks import ProxyConnector
 from apscheduler.events import (
     EVENT_JOB_ERROR,
     EVENT_JOB_EXECUTED,
@@ -134,8 +139,25 @@ def _build_action_kb_for_pending(pending_id: int, allowed: bool):
 
 async def send_reminder(pending_id: int):
     """Отправка уведомлений владельцу и подписчикам с учётом разрешений. Все записи в БД — через репозитории."""
+
     logger.info("[JOB START] pending_id=%s", pending_id)
-    bot = Bot(token=settings.BOT_TOKEN)
+
+    proxy_url = getattr(settings, "PROXY_URL", None)
+    timeout = ClientTimeout(total=60)
+
+    session = None
+    if proxy_url:
+        connector = ProxyConnector.from_url(proxy_url)
+        session = AiohttpSession(connector=connector, timeout=timeout)
+        logger.info(f"[JOB] Proxy enabled: {proxy_url}")
+    else:
+        logger.info("[JOB] Proxy not set, using direct connection")
+
+    bot = Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session,
+    )
 
     schedule_id: int | None = None
     commit_ok = False

@@ -24,4 +24,5 @@ class Settings(BaseSettings):
         extra="ignore",  # чтобы не падало, если есть лишние переменные
     )
 
+
 settings = Settings()
