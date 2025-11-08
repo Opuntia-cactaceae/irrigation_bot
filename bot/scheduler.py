@@ -14,7 +14,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters.callback_data import CallbackData
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import ClientTimeout
-from aiohttp_socks import ProxyConnector
+
 from apscheduler.events import (
     EVENT_JOB_ERROR,
     EVENT_JOB_EXECUTED,
@@ -145,18 +145,20 @@ async def send_reminder(pending_id: int):
     proxy_url = getattr(settings, "PROXY_URL", None)
     timeout = ClientTimeout(total=60)
 
-    session = None
+    session = AiohttpSession(
+        proxy=proxy_url,
+        timeout=timeout
+    ) if proxy_url else AiohttpSession(timeout=timeout)
+
     if proxy_url:
-        connector = ProxyConnector.from_url(proxy_url)
-        session = AiohttpSession(connector=connector, timeout=timeout)
-        logger.info(f"[JOB] Proxy enabled: {proxy_url}")
+        logging.info(f"[BOT] Proxy enabled: {proxy_url}")
     else:
-        logger.info("[JOB] Proxy not set, using direct connection")
+        logging.info("[BOT] Proxy not set, using direct connection")
 
     bot = Bot(
         token=settings.BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
     schedule_id: int | None = None
