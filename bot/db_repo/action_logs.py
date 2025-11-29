@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import select, delete, desc, func, and_
+from sqlalchemy import select, delete, desc, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -30,7 +30,7 @@ class ActionLogsRepo(BaseRepo):
     async def _resolve_owner_from_ids(
             self, *, schedule_id: int | None, plant_id: int | None
     ) -> int | None:
-        # 1) сперва через расписание -> plant -> owner
+
         if schedule_id is not None:
             res = await self.session.execute(
                 select(Plant.user_id).join(Schedule, Schedule.plant_id == Plant.id).where(Schedule.id == schedule_id)
@@ -39,7 +39,7 @@ class ActionLogsRepo(BaseRepo):
             if owner is not None:
                 return owner
 
-        # 2) иначе попробуем по plant_id
+
         if plant_id is not None:
             res = await self.session.execute(
                 select(Plant.user_id).where(Plant.id == plant_id)
@@ -54,7 +54,7 @@ class ActionLogsRepo(BaseRepo):
     async def create(
             self,
             *,
-            user_id: int,  # кто совершил действие (actor)
+            user_id: int,
             action: ActionType,
             status: ActionStatus,
             source: ActionSource,
@@ -63,20 +63,30 @@ class ActionLogsRepo(BaseRepo):
             done_at_utc: datetime | None = None,
             plant_name_at_time: str | None = None,
             note: str | None = None,
-            # новенькое:
-            owner_user_id: int | None = None,  # владелец растения (желательно передавать)
+            owner_user_id: int | None = None,
             share_id: int | None = None,
             share_member_id: int | None = None,
     ) -> ActionLog:
 
-        # если owner не передали — попробуем определить по schedule/plant
         if owner_user_id is None:
             owner_user_id = await self._resolve_owner_from_ids(
                 schedule_id=schedule_id, plant_id=plant_id
             )
-        # финальный запасной вариант — автор и владелец совпадают
-        if owner_user_id is None:
-            owner_user_id = user_id
+
+        if plant_name_at_time is None:
+            if plant_id is not None:
+                res = await self.session.execute(
+                    select(Plant.name).where(Plant.id == plant_id)
+                )
+                plant_name_at_time = res.scalar_one_or_none()
+
+            elif schedule_id is not None:
+                res = await self.session.execute(
+                    select(Plant.name)
+                    .join(Schedule, Schedule.plant_id == Plant.id)
+                    .where(Schedule.id == schedule_id)
+                )
+                plant_name_at_time = res.scalar_one_or_none()
 
         log = ActionLog(
             user_id=user_id,
@@ -208,6 +218,47 @@ class ActionLogsRepo(BaseRepo):
         q = select(ActionLog).where(and_(*conds)).order_by(desc(ActionLog.done_at_utc)).limit(limit).offset(offset)
         if with_relations:
             q = q.options(selectinload(ActionLog.plant), selectinload(ActionLog.schedule))
+        return (await self.session.execute(q)).scalars().all()
+
+    async def list_for_history(
+            self,
+            user_id: int,
+            *,
+            limit: int = 100,
+            offset: int = 0,
+            action: ActionType | None = None,
+            status: ActionStatus | None = None,
+            since: datetime | None = None,
+            until: datetime | None = None,
+            with_relations: bool = False,
+    ) -> Sequence[ActionLog]:
+        conds = [
+            or_(
+                ActionLog.user_id == user_id,
+                ActionLog.owner_user_id == user_id,
+            )
+        ]
+        if action:
+            conds.append(ActionLog.action == action)
+        if status:
+            conds.append(ActionLog.status == status)
+        if since:
+            conds.append(ActionLog.done_at_utc >= since)
+        if until:
+            conds.append(ActionLog.done_at_utc < until)
+
+        q = (
+            select(ActionLog)
+            .where(and_(*conds))
+            .order_by(desc(ActionLog.done_at_utc))
+            .limit(limit)
+            .offset(offset)
+        )
+        if with_relations:
+            q = q.options(
+                selectinload(ActionLog.plant),
+                selectinload(ActionLog.schedule),
+            )
         return (await self.session.execute(q)).scalars().all()
 
     async def list_by_plant(

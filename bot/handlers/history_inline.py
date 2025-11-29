@@ -80,11 +80,12 @@ async def _get_history_week(
         since_utc, _ = _local_day_bounds_utc(tz, monday)
         _, until_utc = _local_day_bounds_utc(tz, sunday + timedelta(days=1))
 
-        own_logs = await uow.action_logs.list_by_user(
+        own_logs = await uow.action_logs.list_for_history(
             user.id, action=action or None, status=None,
             since=since_utc, until=until_utc,
             limit=10_000, offset=0, with_relations=False,
         )
+
         shared_logs = await uow.action_logs.list_shared_for_subscriber(
             user.id, action=action or None, status=None,
             since=since_utc, until=until_utc,
